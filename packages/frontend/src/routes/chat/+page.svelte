@@ -193,6 +193,8 @@
     files: Array<{ fileId: string; filename: string; mimeType: string; size: number; contentType: 'image' | 'audio' | 'file'; url: string }>,
     prosody?: Record<string, number>
   ) {
+    if (!activeThreadId) return;
+
     if (files.length === 0) {
       // Text only
       send({

@@ -1,6 +1,6 @@
 # Built-in Tools
 
-Resonant ships a set of tools your agent can use during conversations. In Claude Code, these are exposed through Bash alongside Claude's native tools. Other runtimes receive tool access according to their adapter capabilities, which are still being normalized.
+Resonant ships a set of tools your agent can use via Bash during conversations. These extend beyond Claude Code's native tools (Read, Write, Edit, Bash, Grep, Glob) with conversation-aware capabilities.
 
 Tools are accessed through `tools/sc.mjs` — a CLI that wraps Resonant's internal API. The agent's orientation context includes the full command reference on every message, so it knows what's available.
 
@@ -143,7 +143,7 @@ All conditions are AND-joined — every condition must be true for the trigger t
 
 ## Telegram Tools
 
-Available when Telegram is enabled and configured in Settings. These appear in the agent's context automatically for Telegram-capable sessions.
+Available when the user is on Telegram. These appear in the agent's context automatically.
 
 ```bash
 sc tg photo /path/to/image.png "caption"
@@ -184,7 +184,7 @@ All tools accept JSON parameters via the MCP protocol. The companion's hooks sys
 
 ## The Scribe (Digest Agent)
 
-A configurable background agent that produces structured daily digests of conversation. By default it runs every 30 minutes through the configured Scribe runtime and saves digests to `data/digests/YYYY-MM-DD.md`.
+A background agent that runs every 30 minutes on Haiku, producing structured daily digests of conversation. Digests are saved to `data/digests/YYYY-MM-DD.md`.
 
 Each digest block extracts:
 - **Topics & Themes** — categorized by work, personal, health, creative, etc.
@@ -198,11 +198,9 @@ Each digest block extracts:
 
 ### Configuration
 
-- Toggle, provider, model, interval, digest folder, and minimum-message threshold are editable in Settings > Preferences > Scribe
-- YAML config lives under `scribe:` (`enabled`, `provider`, `model`, `interval_minutes`, `digest_path`, `min_messages`)
-- Older config DB keys such as `digest.enabled`, `digest.provider`, `digest.model`, and `digest.min_messages` are still honored as compatibility overrides
+- Toggle: set `digest.enabled` to `false` in the config DB to disable
 - The Scribe skips runs when the companion is actively processing
-- Requires at least the configured number of new messages since the last digest
+- Requires at least 5 new messages since the last digest
 - Uses `companion_name` and `user_name` from `resonant.yaml` for speaker labels
 
 ---
@@ -218,7 +216,7 @@ Type `/` in the chat input to open the CommandPalette. Commands are auto-discove
 
 ## Internal API
 
-All tools wrap internal REST endpoints intended for same-machine agent use. Keep them bound to localhost/private access, and do not expose them directly to the public internet.
+All tools wrap localhost-only REST endpoints. These require no authentication — just the request must come from `127.0.0.1`.
 
 | Endpoint | Purpose |
 |----------|---------|

@@ -153,16 +153,11 @@ const voiceService = new VoiceService();
 setVoiceService(voiceService);
 
 // Initialize push service
-const pushPublicKeyEnv = config.push.vapid_public_key_env || 'VAPID_PUBLIC_KEY';
-const pushPrivateKeyEnv = config.push.vapid_private_key_env || 'VAPID_PRIVATE_KEY';
-const pushService = new PushService({
-  enabled: config.push.enabled,
-  vapidPublic: process.env[pushPublicKeyEnv],
-  vapidPrivate: process.env[pushPrivateKeyEnv],
-  vapidContact: process.env.VAPID_CONTACT || config.push.vapid_contact,
-  publicKeyEnv: pushPublicKeyEnv,
-  privateKeyEnv: pushPrivateKeyEnv,
-});
+const pushService = new PushService(
+  process.env.VAPID_PUBLIC_KEY,
+  process.env.VAPID_PRIVATE_KEY,
+  process.env.VAPID_CONTACT,
+);
 agentService.setPushService(pushService);
 
 // Initialize Discord gateway (config-gated with env fallback)

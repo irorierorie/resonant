@@ -1,9 +1,13 @@
 {
   "name": "resonant",
-  "version": "2.2.1",
+  "version": "2.2.2",
   "private": true,
-  "description": "Self-hosted relational AI companion framework with provider-pluggable runtimes",
-  "workspaces": ["packages/shared", "packages/backend", "packages/frontend"],
+  "description": "Relational AI companion framework built on Claude Code Agent SDK",
+  "workspaces": [
+    "packages/shared",
+    "packages/backend",
+    "packages/frontend"
+  ],
   "scripts": {
     "setup": "node scripts/setup.mjs",
     "dev": "npm run dev --workspace=packages/backend",
@@ -12,8 +16,7 @@
     "build": "npm run build --workspace=packages/shared && npm run build --workspace=packages/frontend && npm run build --workspace=packages/backend",
     "start": "npm run start --workspace=packages/backend",
     "check": "npm run check --workspaces --if-present",
-    "test": "vitest run",
-    "privacy:scan": "node scripts/privacy-scan.mjs"
+    "test": "vitest run"
   },
   "engines": {
     "node": ">=20.0.0 <25.0.0"

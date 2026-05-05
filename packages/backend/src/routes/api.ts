@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 import multer from 'multer';
-import { readdirSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { join, basename, resolve, dirname } from 'path';
+import { readdirSync, readFileSync, writeFileSync, existsSync } from 'fs';
+import { join, basename, resolve } from 'path';
 import yaml from 'js-yaml';
 import {
   listThreads,
@@ -56,13 +56,11 @@ import { getRecentAuditEntries } from '../services/audit.js';
 import { embed, vectorToBuffer } from '../services/embeddings.js';
 import { searchVectors, getCacheStats, type SearchFilter } from '../services/vector-cache.js';
 import { saveFile, saveFileInternal, getContentTypeFromMime, getFile, deleteFile, listFiles } from '../services/files.js';
-import { registry, setGatewayServices } from '../services/ws.js';
-import { getResonantConfig, PROJECT_ROOT } from '../config.js';
-import { RUNTIME_CAPABILITIES } from '../runtime/capabilities.js';
-import { resolveRuntimeSelection } from '../runtime/selection.js';
+import { registry } from '../services/ws.js';
+import { getResonantConfig } from '../config.js';
 import type { Orchestrator } from '../services/orchestrator.js';
 import type { VoiceService } from '../services/voice.js';
-import { TelegramService } from '../services/telegram/index.js';
+import type { TelegramService } from '../services/telegram/index.js';
 import type { PushService } from '../services/push.js';
 import rateLimit from 'express-rate-limit';
 // CC routes imported lazily below (after config loads)
@@ -862,138 +860,45 @@ router.use(authMiddleware);
 // --- Preferences (resonant.yaml) ---
 
 function findConfigPath(): string | null {
-  const explicitConfigPath = process.env.RESONANT_CONFIG;
-  if (explicitConfigPath) {
-    const p = resolve(PROJECT_ROOT, explicitConfigPath);
-    if (existsSync(p)) return p;
-    return null;
-  }
-
   for (const name of ['resonant.yaml', 'resonant.yml']) {
-    const p = resolve(PROJECT_ROOT, name);
+    const p = resolve(name);
     if (existsSync(p)) return p;
   }
   return null;
-}
-
-function readTextIfExists(path: string | undefined): string {
-  if (!path || !existsSync(path)) return '';
-  return readFileSync(path, 'utf-8');
-}
-
-function resolveConfiguredPath(pathValue: unknown, fallback: string): string {
-  const path = typeof pathValue === 'string' && pathValue.trim() ? pathValue : fallback;
-  return resolve(PROJECT_ROOT, path);
-}
-
-function writeTextFile(path: string, content: string): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, content, 'utf-8');
 }
 
 router.get('/preferences', (req, res) => {
   try {
     const configPath = findConfigPath();
     if (!configPath) {
-      res.status(404).json({ error: 'No config file found' });
+      res.json({ error: 'No config file found' });
       return;
     }
     const raw = readFileSync(configPath, 'utf-8');
     const parsed = yaml.load(raw) as Record<string, unknown> || {};
     // Only expose safe, editable fields — not server internals
     const config = getResonantConfig();
-    const parsedIdentity = (parsed as any).identity || {};
-    const parsedOpenRouter = (parsed as any).agent?.openrouter || {};
-    const profilePath = parsedIdentity.profile_path
-      ? resolveConfiguredPath(parsedIdentity.profile_path, './identity/companion.profile.yaml')
-      : config.identity.profile_path;
-    const companionMarkdownPath = parsedIdentity.companion_md_path
-      ? resolveConfiguredPath(parsedIdentity.companion_md_path, './identity/companion.md')
-      : config.identity.companion_md_path;
-    const providerOverridesPath = parsedIdentity.provider_overrides_path
-      ? resolveConfiguredPath(parsedIdentity.provider_overrides_path, './identity/provider-overrides')
-      : config.identity.provider_overrides_path;
-    const openRouterEnv = parsedOpenRouter.api_key_env || config.agent.openrouter.api_key_env || 'OPENROUTER_API_KEY';
-    const openRouterKeySet = Boolean(parsedOpenRouter.api_key || config.agent.openrouter.api_key || process.env[openRouterEnv]);
     res.json({
       identity: {
         companion_name: config.identity.companion_name,
         user_name: config.identity.user_name,
         timezone: config.identity.timezone,
-        profile_path: parsedIdentity.profile_path ?? config.identity.profile_path,
-        companion_md_path: parsedIdentity.companion_md_path ?? config.identity.companion_md_path,
-        provider_overrides_path: parsedIdentity.provider_overrides_path ?? config.identity.provider_overrides_path,
-        profile_yaml: readTextIfExists(profilePath),
-        companion_markdown: readTextIfExists(companionMarkdownPath),
-        provider_overrides: {
-          claude_code: readTextIfExists(join(providerOverridesPath, 'claude-code.md')),
-          openai_codex: readTextIfExists(join(providerOverridesPath, 'openai-codex.md')),
-          openrouter: readTextIfExists(join(providerOverridesPath, 'openrouter.md')),
-        },
       },
       agent: {
-        provider: config.agent.provider,
-        autonomous_provider: config.agent.autonomous_provider,
         model: config.agent.model,
         model_autonomous: config.agent.model_autonomous,
-        openai_codex_permission: config.agent.openai_codex_permission,
-        openrouter: {
-          base_url: parsedOpenRouter.base_url ?? config.agent.openrouter.base_url,
-          api_key_env: parsedOpenRouter.api_key_env ?? config.agent.openrouter.api_key_env,
-          default_model: parsedOpenRouter.default_model ?? config.agent.openrouter.default_model,
-          api_key_set: openRouterKeySet,
-        },
-      },
-      providers: RUNTIME_CAPABILITIES,
-      scribe: {
-        enabled: (parsed as any)?.scribe?.enabled ?? config.scribe.enabled,
-        provider: (parsed as any)?.scribe?.provider ?? config.scribe.provider,
-        model: (parsed as any)?.scribe?.model ?? config.scribe.model,
-        interval_minutes: (parsed as any)?.scribe?.interval_minutes ?? config.scribe.interval_minutes,
-        digest_path: (parsed as any)?.scribe?.digest_path ?? config.scribe.digest_path,
-        min_messages: (parsed as any)?.scribe?.min_messages ?? config.scribe.min_messages,
-      },
-      hooks: {
-        context_injection: (parsed as any)?.hooks?.context_injection ?? config.hooks.context_injection,
-        safe_write_prefixes: (parsed as any)?.hooks?.safe_write_prefixes ?? config.hooks.safe_write_prefixes,
       },
       orchestrator: {
         enabled: (parsed as any)?.orchestrator?.enabled ?? config.orchestrator.enabled,
-        wake_prompts_path: (parsed as any)?.orchestrator?.wake_prompts_path ?? config.orchestrator.wake_prompts_path,
       },
       voice: {
         enabled: (parsed as any)?.voice?.enabled ?? config.voice.enabled,
-        elevenlabs_voice_id: (parsed as any)?.voice?.elevenlabs_voice_id ?? config.voice.elevenlabs_voice_id,
-      },
-      push: {
-        enabled: (parsed as any)?.push?.enabled ?? config.push.enabled,
-        vapid_public_key_env: (parsed as any)?.push?.vapid_public_key_env ?? config.push.vapid_public_key_env,
-        vapid_private_key_env: (parsed as any)?.push?.vapid_private_key_env ?? config.push.vapid_private_key_env,
-        vapid_contact: (parsed as any)?.push?.vapid_contact ?? config.push.vapid_contact,
       },
       discord: {
         enabled: (parsed as any)?.discord?.enabled ?? config.discord.enabled,
-        owner_user_id: (parsed as any)?.discord?.owner_user_id ?? config.discord.owner_user_id,
       },
       telegram: {
         enabled: (parsed as any)?.telegram?.enabled ?? config.telegram.enabled,
-        owner_chat_id: (parsed as any)?.telegram?.owner_chat_id ?? config.telegram.owner_chat_id,
-      },
-      integrations: {
-        life_api_url: (parsed as any)?.integrations?.life_api_url ?? config.integrations.life_api_url,
-        mind_cloud: {
-          enabled: (parsed as any)?.integrations?.mind_cloud?.enabled ?? config.integrations.mind_cloud.enabled,
-          mcp_url: (parsed as any)?.integrations?.mind_cloud?.mcp_url ?? config.integrations.mind_cloud.mcp_url,
-        },
-      },
-      command_center: {
-        enabled: (parsed as any)?.command_center?.enabled ?? config.command_center.enabled,
-        default_person: (parsed as any)?.command_center?.default_person ?? config.command_center.default_person,
-        currency_symbol: (parsed as any)?.command_center?.currency_symbol ?? config.command_center.currency_symbol,
-        care_categories: (parsed as any)?.command_center?.care_categories ?? config.command_center.care_categories,
-      },
-      cors: {
-        origins: (parsed as any)?.cors?.origins ?? config.cors.origins,
       },
       auth: {
         has_password: !!config.auth.password,
@@ -1016,144 +921,37 @@ router.put('/preferences', (req, res) => {
     const parsed = (yaml.load(raw) as Record<string, any>) || {};
     const updates = req.body as Record<string, any>;
 
-    if (updates.identity?.profile_yaml !== undefined) {
-      try {
-        yaml.load(String(updates.identity.profile_yaml || '{}'));
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Invalid identity profile YAML';
-        res.status(400).json({ error: `Invalid identity profile YAML: ${message}` });
-        return;
-      }
-    }
-
     // Merge only allowed fields
     if (updates.identity) {
       if (!parsed.identity) parsed.identity = {};
       if (updates.identity.companion_name !== undefined) parsed.identity.companion_name = updates.identity.companion_name;
       if (updates.identity.user_name !== undefined) parsed.identity.user_name = updates.identity.user_name;
       if (updates.identity.timezone !== undefined) parsed.identity.timezone = updates.identity.timezone;
-      if (updates.identity.profile_path !== undefined) parsed.identity.profile_path = updates.identity.profile_path;
-      if (updates.identity.companion_md_path !== undefined) parsed.identity.companion_md_path = updates.identity.companion_md_path;
-      if (updates.identity.provider_overrides_path !== undefined) parsed.identity.provider_overrides_path = updates.identity.provider_overrides_path;
     }
     if (updates.agent) {
       if (!parsed.agent) parsed.agent = {};
-      if (updates.agent.provider !== undefined) parsed.agent.provider = updates.agent.provider;
-      if (updates.agent.autonomous_provider !== undefined) parsed.agent.autonomous_provider = updates.agent.autonomous_provider;
       if (updates.agent.model !== undefined) parsed.agent.model = updates.agent.model;
       if (updates.agent.model_autonomous !== undefined) parsed.agent.model_autonomous = updates.agent.model_autonomous;
-      if (updates.agent.openai_codex_permission !== undefined) {
-        parsed.agent.openai_codex_permission = updates.agent.openai_codex_permission;
-        if (!parsed.agent.openai_codex) parsed.agent.openai_codex = {};
-        parsed.agent.openai_codex.permission = updates.agent.openai_codex_permission;
-      }
-      if (updates.agent.openrouter) {
-        if (!parsed.agent.openrouter) parsed.agent.openrouter = {};
-        if (updates.agent.openrouter.base_url !== undefined) parsed.agent.openrouter.base_url = updates.agent.openrouter.base_url;
-        if (updates.agent.openrouter.api_key_env !== undefined) parsed.agent.openrouter.api_key_env = updates.agent.openrouter.api_key_env;
-        if (updates.agent.openrouter.default_model !== undefined) parsed.agent.openrouter.default_model = updates.agent.openrouter.default_model;
-        if (updates.agent.openrouter.clear_api_key) {
-          delete parsed.agent.openrouter.api_key;
-        } else if (typeof updates.agent.openrouter.api_key === 'string' && updates.agent.openrouter.api_key.trim()) {
-          parsed.agent.openrouter.api_key = updates.agent.openrouter.api_key.trim();
-        }
-      }
     }
     if (updates.orchestrator) {
       if (!parsed.orchestrator) parsed.orchestrator = {};
       if (updates.orchestrator.enabled !== undefined) parsed.orchestrator.enabled = updates.orchestrator.enabled;
-      if (updates.orchestrator.wake_prompts_path !== undefined) parsed.orchestrator.wake_prompts_path = updates.orchestrator.wake_prompts_path;
-    }
-    if (updates.hooks) {
-      if (!parsed.hooks) parsed.hooks = {};
-      if (updates.hooks.context_injection !== undefined) parsed.hooks.context_injection = updates.hooks.context_injection;
-      if (updates.hooks.safe_write_prefixes !== undefined) {
-        parsed.hooks.safe_write_prefixes = Array.isArray(updates.hooks.safe_write_prefixes)
-          ? updates.hooks.safe_write_prefixes
-          : String(updates.hooks.safe_write_prefixes).split(/\r?\n|,/).map((s: string) => s.trim()).filter(Boolean);
-      }
-    }
-    if (updates.scribe) {
-      if (!parsed.scribe) parsed.scribe = {};
-      if (updates.scribe.enabled !== undefined) parsed.scribe.enabled = updates.scribe.enabled;
-      if (updates.scribe.provider !== undefined) parsed.scribe.provider = updates.scribe.provider;
-      if (updates.scribe.model !== undefined) parsed.scribe.model = updates.scribe.model;
-      if (updates.scribe.interval_minutes !== undefined) parsed.scribe.interval_minutes = Number(updates.scribe.interval_minutes);
-      if (updates.scribe.digest_path !== undefined) parsed.scribe.digest_path = updates.scribe.digest_path;
-      if (updates.scribe.min_messages !== undefined) parsed.scribe.min_messages = Number(updates.scribe.min_messages);
     }
     if (updates.voice) {
       if (!parsed.voice) parsed.voice = {};
       if (updates.voice.enabled !== undefined) parsed.voice.enabled = updates.voice.enabled;
-      if (updates.voice.elevenlabs_voice_id !== undefined) parsed.voice.elevenlabs_voice_id = updates.voice.elevenlabs_voice_id;
-    }
-    if (updates.push) {
-      if (!parsed.push) parsed.push = {};
-      if (updates.push.enabled !== undefined) parsed.push.enabled = updates.push.enabled;
-      if (updates.push.vapid_public_key_env !== undefined) parsed.push.vapid_public_key_env = updates.push.vapid_public_key_env;
-      if (updates.push.vapid_private_key_env !== undefined) parsed.push.vapid_private_key_env = updates.push.vapid_private_key_env;
-      if (updates.push.vapid_contact !== undefined) parsed.push.vapid_contact = updates.push.vapid_contact;
     }
     if (updates.discord) {
       if (!parsed.discord) parsed.discord = {};
       if (updates.discord.enabled !== undefined) parsed.discord.enabled = updates.discord.enabled;
-      if (updates.discord.owner_user_id !== undefined) parsed.discord.owner_user_id = updates.discord.owner_user_id;
     }
     if (updates.telegram) {
       if (!parsed.telegram) parsed.telegram = {};
       if (updates.telegram.enabled !== undefined) parsed.telegram.enabled = updates.telegram.enabled;
-      if (updates.telegram.owner_chat_id !== undefined) parsed.telegram.owner_chat_id = updates.telegram.owner_chat_id;
-    }
-    if (updates.integrations) {
-      if (!parsed.integrations) parsed.integrations = {};
-      if (updates.integrations.life_api_url !== undefined) parsed.integrations.life_api_url = updates.integrations.life_api_url;
-      if (updates.integrations.mind_cloud) {
-        if (!parsed.integrations.mind_cloud) parsed.integrations.mind_cloud = {};
-        if (updates.integrations.mind_cloud.enabled !== undefined) parsed.integrations.mind_cloud.enabled = updates.integrations.mind_cloud.enabled;
-        if (updates.integrations.mind_cloud.mcp_url !== undefined) parsed.integrations.mind_cloud.mcp_url = updates.integrations.mind_cloud.mcp_url;
-      }
-    }
-    if (updates.command_center) {
-      if (!parsed.command_center) parsed.command_center = {};
-      if (updates.command_center.enabled !== undefined) parsed.command_center.enabled = updates.command_center.enabled;
-      if (updates.command_center.default_person !== undefined) parsed.command_center.default_person = updates.command_center.default_person;
-      if (updates.command_center.currency_symbol !== undefined) parsed.command_center.currency_symbol = updates.command_center.currency_symbol;
-      if (updates.command_center.care_categories !== undefined) parsed.command_center.care_categories = updates.command_center.care_categories;
-    }
-    if (updates.cors) {
-      if (!parsed.cors) parsed.cors = {};
-      if (updates.cors.origins !== undefined) {
-        parsed.cors.origins = Array.isArray(updates.cors.origins)
-          ? updates.cors.origins
-          : String(updates.cors.origins).split(/\r?\n|,/).map((s: string) => s.trim()).filter(Boolean);
-      }
     }
     if (updates.auth) {
       if (!parsed.auth) parsed.auth = {};
       if (updates.auth.password !== undefined) parsed.auth.password = updates.auth.password;
-    }
-
-    const parsedIdentity = parsed.identity || {};
-    if (updates.identity?.profile_yaml !== undefined) {
-      const path = resolveConfiguredPath(parsedIdentity.profile_path, './identity/companion.profile.yaml');
-      writeTextFile(path, String(updates.identity.profile_yaml ?? ''));
-    }
-    if (updates.identity?.companion_markdown !== undefined) {
-      const path = resolveConfiguredPath(parsedIdentity.companion_md_path, './identity/companion.md');
-      writeTextFile(path, String(updates.identity.companion_markdown ?? ''));
-    }
-    if (updates.identity?.provider_overrides) {
-      const overridesPath = resolveConfiguredPath(parsedIdentity.provider_overrides_path, './identity/provider-overrides');
-      const providerOverrides = updates.identity.provider_overrides;
-      if (providerOverrides.claude_code !== undefined) {
-        writeTextFile(join(overridesPath, 'claude-code.md'), String(providerOverrides.claude_code ?? ''));
-      }
-      if (providerOverrides.openai_codex !== undefined) {
-        writeTextFile(join(overridesPath, 'openai-codex.md'), String(providerOverrides.openai_codex ?? ''));
-      }
-      if (providerOverrides.openrouter !== undefined) {
-        writeTextFile(join(overridesPath, 'openrouter.md'), String(providerOverrides.openrouter ?? ''));
-      }
     }
 
     // Write back
@@ -1655,20 +1453,8 @@ router.get('/sessions', async (req, res) => {
 // Get all config
 router.get('/settings', (req, res) => {
   try {
-    const dbConfig = getAllConfig();
-    const resonantConfig = getResonantConfig();
-    const interactiveRuntime = resolveRuntimeSelection(false, resonantConfig);
-    const autonomousRuntime = resolveRuntimeSelection(true, resonantConfig);
-    const config = {
-      ...dbConfig,
-      'agent.provider': dbConfig['agent.provider'] || interactiveRuntime.provider,
-      'agent.autonomous_provider': dbConfig['agent.autonomous_provider'] || autonomousRuntime.provider,
-      'agent.model': dbConfig['agent.model'] || resonantConfig.agent.model,
-      'agent.model_autonomous': dbConfig['agent.model_autonomous'] || resonantConfig.agent.model_autonomous,
-      'agent.openai_codex_permission': dbConfig['agent.openai_codex_permission'] || resonantConfig.agent.openai_codex_permission,
-      'agent.openai_codex.permission': dbConfig['agent.openai_codex.permission'] || resonantConfig.agent.openai_codex.permission,
-    };
-    res.json({ config, providers: RUNTIME_CAPABILITIES });
+    const config = getAllConfig();
+    res.json({ config });
   } catch (error) {
     console.error('Error fetching settings:', error);
     res.status(500).json({ error: 'Failed to fetch settings' });
@@ -1851,19 +1637,6 @@ router.delete('/canvases/:id', (req, res) => {
 });
 
 // --- Push subscription endpoints ---
-
-router.get('/push/status', (req, res) => {
-  const pushService = req.app.locals.pushService as PushService | undefined;
-  const status = pushService?.getConfigStatus() || {
-    enabled: false,
-    configured: false,
-    hasPublicKey: false,
-    publicKeyEnv: 'VAPID_PUBLIC_KEY',
-    privateKeyEnv: 'VAPID_PRIVATE_KEY',
-    vapidContact: 'mailto:admin@example.com',
-  };
-  res.json(status);
-});
 
 // Subscribe to push notifications
 router.post('/push/subscribe', (req, res) => {
@@ -2075,7 +1848,6 @@ router.delete('/orchestrator/triggers/:id', (req, res) => {
 
 import { DiscordService } from '../services/discord/index.js';
 import type { AgentService } from '../services/agent.js';
-import { getTelegramConfig } from '../services/telegram/config.js';
 
 router.get('/discord/status', (req, res) => {
   try {
@@ -2112,10 +1884,6 @@ router.post('/discord/toggle', async (req, res) => {
       await service.start();
       req.app.locals.discordService = service;
       setConfig('discord.enabled', 'true');
-      setGatewayServices({
-        discord: service,
-        telegram: req.app.locals.telegramService ?? null,
-      });
       console.log('[Discord] Gateway enabled via settings toggle');
       res.json({ success: true, message: 'Discord gateway started' });
     } else {
@@ -2126,10 +1894,6 @@ router.post('/discord/toggle', async (req, res) => {
         req.app.locals.discordService = null;
       }
       setConfig('discord.enabled', 'false');
-      setGatewayServices({
-        discord: null,
-        telegram: req.app.locals.telegramService ?? null,
-      });
       console.log('[Discord] Gateway disabled via settings toggle');
       res.json({ success: true, message: 'Discord gateway stopped' });
     }
@@ -2190,109 +1954,6 @@ router.delete('/discord/pairings/:userId', (req, res) => {
   } catch (error) {
     console.error('Error revoking pairing:', error);
     res.status(500).json({ error: 'Failed to revoke pairing' });
-  }
-});
-
-// --- Telegram admin endpoints ---
-
-router.get('/telegram/status', (req, res) => {
-  try {
-    const telegramService = req.app.locals.telegramService as TelegramService | null;
-    const configEnabled = getConfigBool('telegram.enabled', false);
-    const hasToken = !!process.env.TELEGRAM_BOT_TOKEN;
-    const telegramConfig = getTelegramConfig();
-
-    if (!telegramService) {
-      res.json({
-        enabled: false,
-        connected: false,
-        configEnabled,
-        hasToken,
-        ownerChatId: telegramConfig.ownerChatId,
-        maxMessageLength: telegramConfig.maxMessageLength,
-      });
-      return;
-    }
-
-    res.json({
-      enabled: true,
-      configEnabled,
-      hasToken,
-      ownerChatId: telegramConfig.ownerChatId,
-      maxMessageLength: telegramConfig.maxMessageLength,
-      ...telegramService.getStats(),
-    });
-  } catch (error) {
-    console.error('Error fetching Telegram status:', error);
-    res.status(500).json({ error: 'Failed to fetch Telegram status' });
-  }
-});
-
-router.post('/telegram/toggle', async (req, res) => {
-  try {
-    const { enabled } = req.body as { enabled: boolean };
-    const agentService = req.app.locals.agentService as AgentService;
-    const voiceService = req.app.locals.voiceService as VoiceService;
-
-    if (enabled) {
-      if (!process.env.TELEGRAM_BOT_TOKEN) {
-        res.status(400).json({ error: 'TELEGRAM_BOT_TOKEN not set in .env' });
-        return;
-      }
-      if (req.app.locals.telegramService) {
-        setConfig('telegram.enabled', 'true');
-        res.json({ success: true, message: 'Already running' });
-        return;
-      }
-
-      const service = new TelegramService(agentService, registry, voiceService);
-      await service.start();
-      req.app.locals.telegramService = service;
-      setConfig('telegram.enabled', 'true');
-      setGatewayServices({
-        discord: req.app.locals.discordService ?? null,
-        telegram: service,
-      });
-      console.log('[Telegram] Gateway enabled via settings toggle');
-      res.json({ success: true, message: 'Telegram gateway started' });
-    } else {
-      const service = req.app.locals.telegramService as TelegramService | null;
-      if (service) {
-        await service.stop();
-        req.app.locals.telegramService = null;
-      }
-      setConfig('telegram.enabled', 'false');
-      setGatewayServices({
-        discord: req.app.locals.discordService ?? null,
-        telegram: null,
-      });
-      console.log('[Telegram] Gateway disabled via settings toggle');
-      res.json({ success: true, message: 'Telegram gateway stopped' });
-    }
-  } catch (error) {
-    console.error('Error toggling Telegram:', error);
-    res.status(500).json({ error: 'Failed to toggle Telegram gateway' });
-  }
-});
-
-router.get('/telegram/settings', (req, res) => {
-  try {
-    res.json(getTelegramConfig());
-  } catch (error) {
-    console.error('Error fetching Telegram settings:', error);
-    res.status(500).json({ error: 'Failed to fetch Telegram settings' });
-  }
-});
-
-router.put('/telegram/settings', (req, res) => {
-  try {
-    const body = req.body as Record<string, unknown>;
-    if ('ownerChatId' in body) setConfig('telegram.ownerChatId', String(body.ownerChatId ?? ''));
-    if ('maxMessageLength' in body) setConfig('telegram.maxMessageLength', String(body.maxMessageLength ?? 4096));
-    res.json({ success: true, ...getTelegramConfig() });
-  } catch (error) {
-    console.error('Error updating Telegram settings:', error);
-    res.status(500).json({ error: 'Failed to update Telegram settings' });
   }
 });
 

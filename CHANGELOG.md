@@ -2,35 +2,13 @@
 
 All notable changes to Resonant will be documented in this file.
 
-## [2.2.1] - 2026-05-01
+## [2.2.2] - 2026-05-05
 
-### Tool Runtime Patch
+### Runtime Scope
 
-- **Thread continuity for non-session runtimes** — OpenAI Codex and other providers without native session resume now receive bounded recent thread history, so chat context is preserved across turns.
-- **Provider-neutral file tools** — Added executable `file.stat`, `file.list`, `file.read`, `file.search`, `file.write`, and `file.edit` tools with guarded write roots and backup behavior.
-- **Provider-neutral web fetch** — Added `web.fetch` for public HTTP/HTTPS pages with SSRF protections, timeouts, text-only response handling, and redirect safeguards.
-- **Path and URL preflight** — Pasted local paths and public URLs are inspected before model runtime and surfaced as visible tool activity in chat.
-
----
-
-## [2.2.0] - 2026-05-01
-
-### Runtime and Configuration
-
-- **Provider-pluggable runtime settings** — Claude Code remains the default full-featured runtime; OpenAI Codex is available experimentally; OpenRouter config/key management is surfaced for BYOK planning, with chat execution still pending.
-- **Provider-neutral identity** — canonical identity/profile files can render consistently across runtimes, with legacy `CLAUDE.md` fallback preserved.
-- **Scribe settings** — digest provider, model, interval, message threshold, and digest path are configurable from Settings.
-
-### Integrations
-
-- **Push/VAPID settings** — VAPID contact/env names and setup status are visible in Settings.
-- **Telegram gateway settings** — Telegram configuration now has a dedicated Settings surface alongside Discord.
-- **Runtime-aware sessions** — session listing now respects the configured runtime; providers without native session files return an empty list instead of leaking local Claude sessions.
-
-### Documentation
-
-- Updated installation, runtime, remote-access, and deployment docs for v2.2.0.
-- Made Tailscale the private companion baseline and documented Cloudflare Tunnel as an optional HTTPS/public-domain layer requiring Access plus Resonant auth.
+- Restored Resonant's mainline runtime scope to the Claude Code Agent SDK implementation.
+- Removed the experimental provider-neutral/OpenAI runtime layer from the default distribution. OpenAI subscription and model support will continue as a separate Resonant variant rather than adding cross-provider complexity to the Claude SDK product.
+- Kept the public positioning centered on persistent relational AI, local-first companion infrastructure, and Claude Code's trusted security model.
 
 ---
 

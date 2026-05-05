@@ -5,16 +5,18 @@
 <p align="center">
   <a href="https://github.com/codependentai/resonant/releases/latest"><img src="https://img.shields.io/github/v/release/codependentai/resonant?color=5eaba5" alt="Release" /></a>
   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License" /></a>
-  <a href="docs/LLM-AGNOSTIC-ARCHITECTURE.md"><img src="https://img.shields.io/badge/Runtime-Provider--pluggable-6366f1.svg" alt="Provider pluggable runtime" /></a>
+  <a href="https://docs.anthropic.com/en/docs/claude-code"><img src="https://img.shields.io/badge/Built_with-Claude_Agent_SDK-6366f1.svg" alt="Built with Claude" /></a>
   <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.7-3178c6.svg" alt="TypeScript" /></a>
   <a href="https://svelte.dev/"><img src="https://img.shields.io/badge/SvelteKit-2.0-ff3e00.svg" alt="SvelteKit" /></a>
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-20+-339933.svg" alt="Node.js" /></a>
   <a href="https://www.sqlite.org/"><img src="https://img.shields.io/badge/Self--Hosted-SQLite-003B57.svg" alt="Self Hosted" /></a>
 </p>
 
-<p align="center"><em>A self-hosted relational AI companion framework with provider-pluggable runtimes.<br/>Your AI remembers, reaches out, and grows — inside infrastructure you control.</em></p>
+<p align="center"><em>A relational AI companion framework built on Claude Code Agent SDK.<br/>Your AI remembers, reaches out, and grows — inside the security model you already trust.</em></p>
 
-<p align="center"><em>An open-source implementation of the relational-AI thesis: intelligence is plural, social, and persistent. Built as a natural-language harness with hooks that surface context before the runtime sees the prompt.</em></p>
+<p align="center"><em>An open-source implementation of the relational-AI thesis: intelligence is plural, social, and persistent. Built as a natural-language harness on the Claude Agent SDK, with hooks that surface context before the model sees the prompt.</em></p>
+
+> **Runtime scope:** Mainline Resonant is the Claude Code Agent SDK implementation. OpenAI subscription/model support is being developed separately as its own Resonant variant, so this repo can stay focused on the Claude SDK security model and companion runtime it was designed around.
 
 <p align="center">
   <a href="https://ko-fi.com/codependentai"><img src="https://img.shields.io/badge/Ko--fi-Support%20Us-ff5e5b?logo=ko-fi&logoColor=white" alt="Ko-fi" /></a>
@@ -29,9 +31,9 @@ Most AI chat apps are stateless wrappers around an API. Resonant is a **persiste
 
 - **Maintains sessions** — conversation threads with daily rotation and named threads, session continuity across restarts
 - **Reaches out on its own** — agent-directed autonomy: your companion creates its own routines, sets triggers for when you come online, adjusts its own failsafe thresholds, and runs periodic awareness checks. Not just scheduled tasks — genuine self-directed behavior
-- **Understands context** — hooks system injects time awareness, conversation flow, emotional markers, and presence state into every interaction. Identity and memory context are rendered through a provider-neutral layer
+- **Understands context** — hooks system injects time awareness, conversation flow, emotional markers, and presence state into every interaction. Claude Code's native memory system handles long-term recall
 - **Lives on multiple channels** — web UI, Discord, Telegram, voice (ElevenLabs TTS + Groq transcription)
-- **Runs on your machine** — SQLite database, local files, your data stays yours. Claude Code is the default full-featured runtime; OpenAI Codex is available experimentally; OpenRouter configuration exists for BYOK model routing, but chat execution is still planned.
+- **Runs on your machine** — no cloud dependency beyond your Claude Code subscription. SQLite database, local files, your data stays yours
 
 ## Screenshots
 
@@ -65,11 +67,7 @@ Most AI chat apps are stateless wrappers around an API. Resonant is a **persiste
 
 > **New to this?** See [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md) for a step-by-step guide with screenshots and troubleshooting.
 
-**Prerequisites:** [Node.js 20-24 LTS](https://nodejs.org) (Node 25+ is not supported — native addon crashes, see [#2](https://github.com/codependentai/resonant/issues/2)) and at least one supported runtime login:
-
-- Default: [Claude Code](https://claude.ai/claude-code), logged in with `claude login`
-- Experimental: OpenAI Codex runtime, logged in through your local Codex installation
-- Planned/BYOK: OpenRouter settings and key storage are available, but OpenRouter chat execution is not released yet
+**Prerequisites:** [Node.js 20–24 LTS](https://nodejs.org) (Node 25+ is not supported — native addon crashes, see [#2](https://github.com/codependentai/resonant/issues/2)), [Claude Code](https://claude.ai/claude-code) (logged in)
 
 ```bash
 git clone https://github.com/codependentai/resonant.git
@@ -84,20 +82,20 @@ Open `http://localhost:3002` and start talking.
 
 ## How It Works
 
-Resonant wraps provider runtimes in a full companion infrastructure:
+Resonant wraps the Claude Code Agent SDK in a full companion infrastructure:
 
 ```
 ┌─────────────┐     ┌──────────────┐     ┌─────────────────┐
-│  Web UI     │────▶│  Express +   │────▶│ Runtime Adapter  │
+│  Web UI     │────▶│  Express +   │────▶│  Claude Code     │
 │  (Svelte)   │◀────│  WebSocket   │◀────│  Agent SDK       │
 └─────────────┘     │              │     │                  │
-┌─────────────┐     │  Orchestrator│     │ Identity Layer   │
+┌─────────────┐     │  Orchestrator│     │  Your CLAUDE.md  │
 │  Discord    │────▶│  Hooks       │     │  Your MCP servers│
 │  Telegram   │────▶│  Sessions    │     │  Your tools      │
 └─────────────┘     └──────────────┘     └─────────────────┘
 ```
 
-The companion runs as a Node.js server. It routes each interaction through the selected runtime adapter. Claude Code remains the most complete adapter; OpenAI Codex is experimental; OpenRouter is configurable but not yet executing chat. Your companion identity lives in provider-neutral identity files, with legacy `CLAUDE.md` support for existing installs.
+The companion runs as a Node.js server. It spawns Claude Code Agent SDK queries for each interaction. Your companion's personality lives in `CLAUDE.md`. Its memory lives in Claude Code's native `memory.md` system. Everything is configurable.
 
 ## Configuration
 
@@ -108,28 +106,13 @@ identity:
   companion_name: "Echo"
   user_name: "Alex"
   timezone: "America/New_York"
-  profile_path: "./identity/companion.profile.yaml"
-  companion_md_path: "./identity/companion.md"
-  provider_overrides_path: "./identity/provider-overrides"
 
 agent:
-  provider: "claude-code"             # claude-code | openai-codex | openrouter
-  autonomous_provider: "claude-code"
   model: "claude-sonnet-4-6"          # Interactive messages
   model_autonomous: "claude-sonnet-4-6" # Scheduled wakes
 
 orchestrator:
   enabled: true                       # Autonomous scheduling
-
-scribe:
-  enabled: true
-  provider: "claude-code"
-  model: "claude-sonnet-4-6"
-  digest_path: "./data/digests"
-
-push:
-  enabled: true
-  vapid_contact: "mailto:admin@example.com"
 
 command_center:
   enabled: true                       # Life management system at /cc
@@ -140,9 +123,7 @@ Full reference: [examples/resonant.yaml](examples/resonant.yaml)
 
 ### Context & Memory
 
-Your companion's identity is loaded from `identity/companion.profile.yaml`, `identity/companion.md`, and optional provider overrides in `identity/provider-overrides/`. Existing installs can keep using `CLAUDE.md`; Resonant treats it as a compatibility fallback rather than the conceptual source of truth.
-
-Long-term recall depends on the runtime and connected tools. Claude Code can use its native memory system. Resonant also maintains local sessions, semantic search, scribe digests, and hook-injected orientation context so continuity is not tied to one provider.
+Your companion's personality lives in `CLAUDE.md`. Long-term memory uses Claude Code's native `memory.md` system — your companion learns and remembers automatically across sessions.
 
 Wake prompts (`prompts/wake.md`) control what your companion does during scheduled autonomous sessions. See [examples/wake-prompts.md](examples/wake-prompts.md) for a guide on writing effective prompts and adding custom wake types.
 
@@ -258,14 +239,14 @@ Resonant exists to be substrate for that future. A persistent companion that liv
 
 Agent harness design is usually buried in controller code, which makes harnesses hard to study, compare, transfer, or fork. NLAH argues harness logic should be externalized as portable, editable natural-language artifacts, executed by a runtime through explicit contracts.
 
-That's exactly what Resonant is. The system prompt, identity files, hooks, orchestrator wake prompts, and skills are all natural-language artifacts. Runtime adapters execute the harness. Anyone can read it, edit it, port it, fork it. Nothing critical is hidden in compiled code.
+That's exactly what Resonant is. The system prompt, hooks, orchestrator wake prompts, skills, and `CLAUDE.md` are all natural-language artifacts. The Claude Agent SDK is the runtime. Anyone can read the harness, edit it, port it, fork it. Nothing critical is hidden in compiled code.
 
 ### Memory: extract, retrieve, inject
 **Mem0 — *Building Production-Ready AI Agents with Scalable Long-Term Memory*** &nbsp;[arXiv:2504.19413](https://arxiv.org/abs/2504.19413)
 
 LLMs can't maintain coherence across long conversations because context windows are fixed. Mem0's pattern: dynamically extract salient information from conversations, store it, retrieve it semantically, and inject relevant memories into context **before** the model processes the prompt. Their benchmarks against full-context approaches show 26% accuracy improvement, 91% lower p95 latency, and ~90% token savings.
 
-Resonant implements the same pattern through the runtime lifecycle context builder and hooks — `buildOrientationContext` injects rich context (recent reactions, emotional markers, presence state, life status, available tools) before every query. The context system is provider-aware: it works with Claude Code's native memory system, with any MCP memory server you plug in, or with a custom store. The agent decides when to reach for memory tools; the hooks make sure relevant context is already there when it does.
+Resonant implements the same pattern in [`hooks.ts`](packages/backend/src/services/hooks.ts) — `buildOrientationContext` injects rich context (recent reactions, emotional markers, presence state, life status, available tools) before every query. The hooks system is backend-agnostic: it works with Claude Code's native memory system, with any MCP memory server you plug in, or with a custom store. The agent decides when to reach for memory tools; the hooks make sure relevant context is already there when it does.
 
 See [`docs/MEMORY_ARCHITECTURE.md`](docs/MEMORY_ARCHITECTURE.md) for the full memory architecture, including the warm/cold tiering model and design philosophy.
 
@@ -279,8 +260,7 @@ resonant/
 │   └── frontend/        # SvelteKit UI
 ├── examples/
 │   ├── resonant.yaml    # Full config reference
-│   ├── CLAUDE.md        # Legacy starter companion prompt
-│   ├── identity/        # Provider-neutral companion identity examples
+│   ├── CLAUDE.md        # Starter companion personality
 │   ├── wake-prompts.md  # Wake prompt guide + templates
 │   ├── program.md       # Structured session driver for autonomous work
 │   └── themes/          # CSS theme examples
@@ -314,8 +294,6 @@ pm2 save
 pm2 startup              # Auto-start on boot
 ```
 
-For remote access, use [docs/REMOTE-ACCESS.md](docs/REMOTE-ACCESS.md). The recommended private companion pattern is Tailscale first, then optional Cloudflare Tunnel for a public HTTPS domain. Do not expose the Node port directly to the public internet.
-
 ## Updating
 
 Resonant uses git tags for releases. To update an existing installation:
@@ -338,26 +316,22 @@ To update to a **specific version** instead of latest:
 
 ```bash
 git fetch --tags
-git checkout v2.2.0      # Replace with desired version
+git checkout v1.1.0      # Replace with desired version
 npm install
 npm run build
 ```
 
-Your data (`data/`, `resonant.yaml`, `identity/`, `CLAUDE.md`, `.mcp.json`, `.env`) is gitignored and won't be affected by updates.
+Your data (`data/`, `resonant.yaml`, `CLAUDE.md`, `.mcp.json`, `.env`) is gitignored and won't be affected by updates.
 
 Check the [Releases](https://github.com/codependentai/resonant/releases) page for changelogs.
 
 ## Authentication
 
-## Runtime Authentication
-
-Claude Code is the default full-featured runtime and uses your local Claude Code login:
+Resonant uses the Claude Code Agent SDK — **no API key needed**. Your companion runs queries through your existing Claude Code subscription. Just make sure you're logged in:
 
 ```bash
 claude login
 ```
-
-OpenAI Codex uses your local Codex authentication. OpenRouter is configured as BYOK via `OPENROUTER_API_KEY`, but OpenRouter chat execution is not released in v2.2.0.
 
 The web UI has optional password protection (set in `resonant.yaml` or Settings > Preferences).
 

@@ -112,12 +112,12 @@ self.addEventListener('fetch', (event) => {
 self.addEventListener('push', (event) => {
   const data = event.data?.json() ?? {};
   event.waitUntil(
-    self.registration.showNotification(data.title || 'Resonant', {
+    self.registration.showNotification(data.title || 'Simon', {
       body: data.body || '',
       icon: '/icons/icon-192.png',
       badge: '/icons/icon-192.png',
       data: { threadId: data.threadId, url: data.url || '/chat' },
-      tag: data.tag || 'companion-message',
+      tag: data.tag || 'simon-message',
       renotify: true,
     })
   );

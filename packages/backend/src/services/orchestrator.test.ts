@@ -12,7 +12,7 @@ vi.mock('./db.js', () => ({
   getConfigNumber: vi.fn().mockReturnValue(120),
   getConfig: vi.fn().mockReturnValue(null),
 }));
-vi.mock('../runtime-lifecycle/context-builder.js', () => ({ fetchLifeStatus: vi.fn().mockResolvedValue('') }));
+vi.mock('./hooks.js', () => ({ fetchLifeStatus: vi.fn().mockResolvedValue('') }));
 vi.mock('./triggers.js', () => ({ evaluateConditions: vi.fn().mockReturnValue(true) }));
 vi.mock('./digest.js', () => ({ runDigest: vi.fn() }));
 vi.mock('../config.js', () => ({
@@ -23,14 +23,6 @@ vi.mock('../config.js', () => ({
       wake_prompts_path: '/nonexistent/wake.md',
       schedules: {},
       failsafe: { enabled: true, gentle_minutes: 120, concerned_minutes: 720, emergency_minutes: 1440 },
-    },
-    scribe: {
-      enabled: true,
-      provider: 'claude-code',
-      model: 'claude-sonnet-4-6',
-      interval_minutes: 30,
-      digest_path: './data/digests',
-      min_messages: 5,
     },
   }),
   PROJECT_ROOT: '/tmp/test',
@@ -57,6 +49,7 @@ describe('isValidCron', () => {
     expect(isValidCron('0 0 8 * * *')).toBe(true);
   });
 });
+
 describe('parseWakePromptsFile', () => {
   const tmpDir = join(tmpdir(), 'resonant-test-' + Date.now());
 
@@ -65,9 +58,9 @@ describe('parseWakePromptsFile', () => {
   });
 
   it('returns defaults when file does not exist', () => {
-    const result = parseWakePromptsFile('/nonexistent/wake.md', 'Jordan');
-    expect(result.morning).toContain('Jordan');
-    expect(result.midday).toContain('Jordan');
+    const result = parseWakePromptsFile('/nonexistent/wake.md', 'Mary');
+    expect(result.morning).toContain('Mary');
+    expect(result.midday).toContain('Mary');
     expect(result.evening).toBeDefined();
     expect(result.failsafe_gentle).toBeDefined();
     expect(result.failsafe_concerned).toBeDefined();
@@ -86,12 +79,12 @@ Custom evening wind-down.
 A completely custom wake type.
 `);
 
-    const result = parseWakePromptsFile(filePath, 'Jordan');
+    const result = parseWakePromptsFile(filePath, 'Mary');
     expect(result.morning).toBe('Rise and shine, custom morning prompt.');
     expect(result.evening).toBe('Custom evening wind-down.');
     expect(result.custom_section).toBe('A completely custom wake type.');
     // Defaults still present for missing sections
-    expect(result.midday).toContain('Jordan');
+    expect(result.midday).toContain('Mary');
     expect(result.failsafe_gentle).toBeDefined();
   });
 

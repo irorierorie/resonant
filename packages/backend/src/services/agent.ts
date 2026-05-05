@@ -1,54 +1,46 @@
-import type { McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
-import type { McpServerInfo, MessageSegment } from '@resonant/shared';
-import crypto from 'crypto';
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'fs';
-import { join, resolve } from 'path';
-import { getResonantConfig } from '../config.js';
-import { loadCompanionIdentity } from '../identity/load.js';
-import { describeIdentitySource, renderIdentityPrompt } from '../identity/render.js';
-import type { IdentityProvider, LoadedCompanionIdentity } from '../identity/types.js';
-import { buildOrientationContext } from '../runtime-lifecycle/context-builder.js';
-import type { RuntimeLifecycleContext, ToolInsertion } from '../runtime-lifecycle/types.js';
-import { RuntimeProviderManager } from '../runtime/provider-manager.js';
-import { resolveRuntimeSelection } from '../runtime/selection.js';
-import type { RuntimeEvent, RuntimeProvider, RuntimeProviderId } from '../runtime/types.js';
-import { fetchWebUrl } from '../tools/web-tools.js';
-import type { PushService } from './push.js';
-import {
-  createMessage,
-  createSessionRecord,
-  endSessionRecord,
-  getMessages,
-  getThread,
-  updateThreadSession,
-} from './db.js';
+import { query, AbortError, listSessions, type Options, type Query, type McpServerConfig, type ListSessionsOptions } from '@anthropic-ai/claude-agent-sdk';
+import type { McpServerInfo } from '@resonant/shared';
+import { createMessage, updateThreadSession, getThread, updateThreadActivity, createSessionRecord, endSessionRecord } from './db.js';
 import { registry } from './ws.js';
+import { createHooks, buildOrientationContext, type HookContext, type ToolInsertion } from './hooks.js';
+import type { MessageSegment } from '@resonant/shared';
+import type { PushService } from './push.js';
+import { getResonantConfig } from '../config.js';
+import crypto from 'crypto';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { join, dirname } from 'path';
 
-let initialized = false;
-let companionIdentityPrompt = '';
-let companionIdentity: LoadedCompanionIdentity | null = null;
+// Lazy-init: config isn't available at import time — defer until first use
+let _initialized = false;
+let claudeMdContent = '';
 let AGENT_CWD = '';
 const mcpServersFromConfig: Record<string, McpServerConfig> = {};
-let runtimeProviders: RuntimeProviderManager | null = null;
-let activeRuntimeProvider: RuntimeProvider | null = null;
 
-let presenceStatus: 'active' | 'dormant' | 'waking' | 'offline' = 'offline';
-let contextTokensUsed = 0;
-let contextWindowSize = 0;
-let cachedMcpStatus: McpServerInfo[] = [];
-
-function ensureInit(): void {
-  if (initialized) return;
-  initialized = true;
-
+function ensureInit() {
+  if (_initialized) return;
+  _initialized = true;
   const config = getResonantConfig();
   AGENT_CWD = config.agent.cwd;
 
-  companionIdentity = loadCompanionIdentity(config);
-  companionIdentityPrompt = renderIdentityPrompt(companionIdentity, 'claude-code');
-  console.log(`Loaded companion identity from: ${describeIdentitySource(companionIdentity)} (${companionIdentityPrompt.length} chars)`);
+  // Load CLAUDE.md
+  const candidates = [
+    config.agent.claude_md_path,
+    join(AGENT_CWD, '.claude/CLAUDE.md'),
+    join(AGENT_CWD, 'CLAUDE.md'),
+  ];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    if (existsSync(candidate)) {
+      claudeMdContent = readFileSync(candidate, 'utf-8');
+      console.log(`Loaded CLAUDE.md from: ${candidate} (${claudeMdContent.length} chars)`);
+      break;
+    }
+  }
 
-  const mcpJsonPath = config.agent.claude_code.mcp_json_path || config.agent.mcp_json_path;
+  // Load .mcp.json
+  const mcpJsonPath = config.agent.mcp_json_path;
   if (existsSync(mcpJsonPath)) {
     try {
       const mcpJson = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
@@ -68,25 +60,29 @@ function ensureInit(): void {
       console.warn('Failed to load .mcp.json:', err instanceof Error ? err.message : err);
     }
   }
-
-  runtimeProviders = new RuntimeProviderManager(mcpServersFromConfig, AGENT_CWD);
 }
 
-function identityProviderForRuntime(provider: RuntimeProviderId): IdentityProvider {
-  return provider;
-}
+// Presence state
+let presenceStatus: 'active' | 'dormant' | 'waking' | 'offline' = 'offline';
 
-function renderPromptForProvider(provider: RuntimeProviderId): string {
-  ensureInit();
-  if (!companionIdentity) return companionIdentityPrompt;
-  return renderIdentityPrompt(companionIdentity, identityProviderForRuntime(provider));
-}
+// Context window tracking
+let contextTokensUsed = 0;
+let contextWindowSize = 0;
+
+// Active query tracking (for abort, MCP control, rewind)
+let activeAbortController: AbortController | null = null;
+let activeQuery: Query | null = null;
+
+// ---------------------------------------------------------------------------
+// QueryQueue — priority-based queue replacing boolean queryLock
+// Agent SDK V1 can only run one query at a time, so we queue excess requests
+// ---------------------------------------------------------------------------
 
 const PRIORITIES = {
-  web_interactive: 0,
-  discord_owner: 1,
-  discord_other: 2,
-  autonomous: 3,
+  web_interactive: 0,    // Owner typing in UI
+  discord_owner: 1,      // Owner on Discord
+  discord_other: 2,      // Other users
+  autonomous: 3,         // Orchestrator wakes
 } as const;
 
 const MAX_QUEUE_DEPTH = 5;
@@ -113,6 +109,7 @@ class QueryQueue {
   }
 
   async enqueue(priority: number, execute: () => Promise<string>): Promise<string> {
+    // If idle, run immediately
     if (!this.running && this.queue.length === 0) {
       this.running = true;
       try {
@@ -123,18 +120,22 @@ class QueryQueue {
       }
     }
 
+    // Queue is full — reject
     if (this.queue.length >= MAX_QUEUE_DEPTH) {
       const cfg = getResonantConfig();
-      return `[${cfg.identity.companion_name} is busy - please try again in a moment]`;
+      return `[${cfg.identity.companion_name} is busy — please try again in a moment]`;
     }
 
+    // Enqueue with priority
     return new Promise<string>((resolve, reject) => {
       this.queue.push({ priority, resolve, reject, execute, enqueuedAt: Date.now() });
+      // Sort by priority (lower number = higher priority)
       this.queue.sort((a, b) => a.priority - b.priority);
     });
   }
 
   private async processNext(): Promise<void> {
+    // Prune timed-out entries
     const now = Date.now();
     this.queue = this.queue.filter(entry => {
       if (now - entry.enqueuedAt > QUEUE_TIMEOUT_MS) {
@@ -145,8 +146,10 @@ class QueryQueue {
     });
 
     if (this.queue.length === 0) return;
+
     const next = this.queue.shift()!;
     this.running = true;
+
     try {
       const result = await next.execute();
       next.resolve(result);
@@ -161,232 +164,32 @@ class QueryQueue {
 
 const queryQueue = new QueryQueue();
 
+// Extract a short summary from thinking text (first sentence, capped at ~120 chars)
+function extractThinkingSummary(text: string): string {
+  const trimmed = text.replace(/^\s+/, '');
+  // Find first sentence boundary
+  const match = trimmed.match(/^(.+?(?:\.\s|!\s|\?\s|\n))/);
+  if (match) {
+    const sentence = match[1].trim();
+    if (sentence.length <= 120) return sentence;
+    return sentence.slice(0, 117) + '...';
+  }
+  // No sentence boundary found — take first 120 chars
+  if (trimmed.length <= 120) return trimmed;
+  return trimmed.slice(0, 117) + '...';
+}
+
 interface ThinkingInsertion {
   textOffset: number;
   content: string;
   summary: string;
 }
 
-const MAX_HISTORY_MESSAGES = 24;
-const MAX_HISTORY_CHARS = 60_000;
-const MAX_PREFLIGHT_PATHS = 4;
-const MAX_PREFLIGHT_FILE_CHARS = 80_000;
-const MAX_PREFLIGHT_DIR_ENTRIES = 120;
-const MAX_PREFLIGHT_URLS = 3;
-const MAX_PREFLIGHT_WEB_CHARS = 80_000;
-
-function stripSegmentNoise(content: string): string {
-  return content
-    .replace(/\[No response\]/g, '')
-    .trim();
-}
-
-function buildThreadHistoryContext(threadId: string, currentContent: string, provider: RuntimeProvider): string {
-  if (provider.capabilities.sessions) return '';
-
-  const messages = getMessages({ threadId, limit: MAX_HISTORY_MESSAGES + 1 });
-  const previous = messages.filter((message, index) => {
-    if (index !== messages.length - 1) return true;
-    return !(message.role === 'user' && message.content === currentContent);
-  });
-  if (previous.length === 0) return '';
-
-  const lines: string[] = [];
-  let usedChars = 0;
-  for (const message of previous) {
-    if (message.content_type && message.content_type !== 'text') continue;
-    const clean = stripSegmentNoise(message.content);
-    if (!clean) continue;
-    const role = message.role === 'companion' ? 'assistant' : message.role;
-    const line = `[${role} | ${message.created_at}]\n${clean}`;
-    usedChars += line.length;
-    lines.push(line);
-  }
-
-  while (usedChars > MAX_HISTORY_CHARS && lines.length > 1) {
-    const removed = lines.shift();
-    usedChars -= removed?.length || 0;
-  }
-
-  if (lines.length === 0) return '';
-  return [
-    '[Recent conversation from this Resonant thread]',
-    'Use this as chat history for continuity. The current user message appears after [/Context]; do not treat this transcript as a new request.',
-    '',
-    lines.join('\n\n---\n\n'),
-  ].join('\n');
-}
-
-function isProbablyTextFile(path: string): boolean {
-  const textExt = /\.(txt|md|mdx|json|jsonl|yaml|yml|toml|ini|env|ts|tsx|js|jsx|mjs|cjs|css|scss|html|svelte|py|ps1|bat|sh|sql|xml|csv|log)$/i;
-  return textExt.test(path) || !/\.[a-z0-9]{2,8}$/i.test(path);
-}
-
-function cleanPathCandidate(candidate: string): string {
-  return candidate
-    .trim()
-    .replace(/^file:\/\/\//i, '')
-    .replace(/^["'`<]+|["'`>]+$/g, '')
-    .replace(/[),.;:!?]+$/g, '')
-    .trim();
-}
-
-function resolveExistingPath(candidate: string): string | null {
-  let current = cleanPathCandidate(candidate);
-  while (current.length > 0) {
-    const normalized = resolve(current);
-    if (existsSync(normalized)) return normalized;
-    const lastSpace = current.lastIndexOf(' ');
-    if (lastSpace < 0) break;
-    current = cleanPathCandidate(current.slice(0, lastSpace));
-  }
-  return null;
-}
-
-function extractExistingLocalPaths(content: string): string[] {
-  const paths = new Set<string>();
-  const patterns = [
-    /\]\((file:\/\/\/?[A-Za-z]:[\\/][^)]+|[A-Za-z]:[\\/][^)]+)\)/g,
-    /["'`]([A-Za-z]:[\\/][^"'`\r\n]+)["'`]/g,
-    /\b([A-Za-z]:[\\/][^\r\n]+)/g,
-  ];
-
-  for (const pattern of patterns) {
-    let match: RegExpExecArray | null;
-    while ((match = pattern.exec(content)) && paths.size < MAX_PREFLIGHT_PATHS) {
-      const resolved = resolveExistingPath(match[1]);
-      if (resolved) paths.add(resolved);
-    }
-  }
-
-  return Array.from(paths);
-}
-
-function buildLocalPathContext(content: string): string {
-  const paths = extractExistingLocalPaths(content);
-  if (paths.length === 0) return '';
-
-  const sections: string[] = [];
-  for (const path of paths) {
-    try {
-      const st = statSync(path);
-      if (st.isDirectory()) {
-        const entries = readdirSync(path, { withFileTypes: true })
-          .slice(0, MAX_PREFLIGHT_DIR_ENTRIES)
-          .map(entry => {
-            const kind = entry.isDirectory() ? 'dir ' : entry.isFile() ? 'file' : 'other';
-            return `${kind} ${entry.name}`;
-          });
-        sections.push([
-          `Path: ${path}`,
-          'Type: directory',
-          `Entries${entries.length >= MAX_PREFLIGHT_DIR_ENTRIES ? ' (truncated)' : ''}:`,
-          entries.join('\n') || '(empty)',
-        ].join('\n'));
-      } else if (st.isFile()) {
-        if (!isProbablyTextFile(path)) {
-          sections.push(`Path: ${path}\nType: file\nNote: likely binary; not preloaded as text.`);
-          continue;
-        }
-        const fileContent = readFileSync(path, 'utf-8');
-        const slice = fileContent.slice(0, MAX_PREFLIGHT_FILE_CHARS);
-        sections.push([
-          `Path: ${path}`,
-          'Type: file',
-          `Content${slice.length < fileContent.length ? ` (truncated at ${slice.length}/${fileContent.length} chars)` : ''}:`,
-          slice,
-        ].join('\n'));
-      }
-    } catch (err) {
-      sections.push(`Path: ${path}\nError preloading path: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  return [
-    '[Local paths from the user message were inspected directly by Resonant before model runtime.]',
-    'Use this path context when answering. Do not substitute memory for these files.',
-    '',
-    ...sections,
-  ].join('\n');
-}
-
-function makePreflightToolInsertion(
-  toolInsertions: ToolInsertion[],
-  toolName: string,
-  input: unknown,
-  output: string,
-  isError = false,
-): void {
-  const toolId = crypto.randomUUID();
-  toolInsertions.push({
-    textOffset: 0,
-    toolId,
-    toolName,
-    input: JSON.stringify(input),
-    output: output.substring(0, 500),
-    isError,
-  });
-  registry.broadcast({
-    type: 'tool_use',
-    toolId,
-    toolName,
-    input: JSON.stringify(input),
-    isComplete: false,
-    textOffset: 0,
-  });
-  registry.broadcast({
-    type: 'tool_result',
-    toolId,
-    output,
-    isError,
-  });
-}
-
-function extractWebUrls(content: string): string[] {
-  const urls = new Set<string>();
-  const pattern = /\bhttps?:\/\/[^\s<>"'`)\]]+/gi;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(content)) && urls.size < MAX_PREFLIGHT_URLS) {
-    const cleaned = match[0].replace(/[.,;:!?]+$/g, '');
-    try {
-      const parsed = new URL(cleaned);
-      urls.add(parsed.toString());
-    } catch {
-      // Ignore malformed URL-like text.
-    }
-  }
-  return Array.from(urls);
-}
-
-async function buildWebUrlContext(content: string): Promise<string> {
-  const urls = extractWebUrls(content);
-  if (urls.length === 0) return '';
-
-  const sections: string[] = [];
-  for (const url of urls) {
-    const result = await fetchWebUrl(url, { maxChars: MAX_PREFLIGHT_WEB_CHARS });
-    sections.push([
-      `Requested URL: ${url}`,
-      result.ok ? 'Fetch: ok' : `Fetch: failed (${result.error || 'error'})`,
-      result.text,
-    ].join('\n'));
-  }
-
-  return [
-    '[Web URLs from the user message were fetched directly by Resonant before model runtime.]',
-    'Use this web context when answering. Do not substitute memory for these URLs.',
-    '',
-    ...sections,
-  ].join('\n\n');
-}
-
-function buildSegments(
-  fullResponse: string,
-  toolInsertions: ToolInsertion[],
-  thinkingBlocks: ThinkingInsertion[] = [],
-): MessageSegment[] {
+// Build interleaved text/tool/thinking segments from response text + insertions
+function buildSegments(fullResponse: string, toolInsertions: ToolInsertion[], thinkingBlocks: ThinkingInsertion[] = []): MessageSegment[] {
   if (toolInsertions.length === 0 && thinkingBlocks.length === 0) return [];
 
+  // Merge all insertions into one sorted list
   type Insertion = { textOffset: number } & (
     | { kind: 'tool'; data: ToolInsertion }
     | { kind: 'thinking'; data: ThinkingInsertion }
@@ -424,6 +227,7 @@ function buildSegments(
     cursor = offset;
   }
 
+  // Trailing text after last insertion
   if (cursor < fullResponse.length) {
     segments.push({ type: 'text', content: fullResponse.slice(cursor) });
   }
@@ -431,11 +235,8 @@ function buildSegments(
   return segments;
 }
 
-function providerManager(): RuntimeProviderManager {
-  ensureInit();
-  if (!runtimeProviders) throw new Error('Runtime providers were not initialized');
-  return runtimeProviders;
-}
+// Cached MCP server status (refreshed on each query)
+let cachedMcpStatus: McpServerInfo[] = [];
 
 export class AgentService {
   private pushService: PushService | null = null;
@@ -457,8 +258,7 @@ export class AgentService {
   }
 
   getMcpStatus(): McpServerInfo[] {
-    const claudeStatus = providerManager().get('claude-code').getMcpStatus?.() || [];
-    return claudeStatus.length > 0 ? claudeStatus : cachedMcpStatus;
+    return cachedMcpStatus;
   }
 
   getContextUsage(): { tokensUsed: number; contextWindow: number } {
@@ -466,51 +266,92 @@ export class AgentService {
   }
 
   stopGeneration(): boolean {
-    if (!activeRuntimeProvider?.abort?.()) return false;
-    registry.broadcast({ type: 'generation_stopped' });
-    return true;
+    if (activeAbortController) {
+      activeAbortController.abort();
+      return true;
+    }
+    return false;
   }
 
   async reconnectMcpServer(name: string): Promise<{ success: boolean; error?: string }> {
-    return providerManager().get('claude-code').reconnectMcpServer?.(name)
-      || { success: false, error: 'Claude Code MCP controls are unavailable' };
+    if (!activeQuery) {
+      return { success: false, error: 'No active session — will apply on next message' };
+    }
+    try {
+      await activeQuery.reconnectMcpServer(name);
+      // Refresh cached status
+      const statuses = await activeQuery.mcpServerStatus();
+      cachedMcpStatus = statuses.map(s => ({
+        name: s.name, status: s.status, error: s.error,
+        toolCount: s.tools?.length ?? 0,
+        tools: s.tools?.map(t => ({ name: t.name, description: t.description })),
+        scope: s.scope,
+      }));
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
   }
 
   async toggleMcpServer(name: string, enabled: boolean): Promise<{ success: boolean; error?: string }> {
-    return providerManager().get('claude-code').toggleMcpServer?.(name, enabled)
-      || { success: false, error: 'Claude Code MCP controls are unavailable' };
+    if (!activeQuery) {
+      return { success: false, error: 'No active session — will apply on next message' };
+    }
+    try {
+      await activeQuery.toggleMcpServer(name, enabled);
+      // Refresh cached status
+      const statuses = await activeQuery.mcpServerStatus();
+      cachedMcpStatus = statuses.map(s => ({
+        name: s.name, status: s.status, error: s.error,
+        toolCount: s.tools?.length ?? 0,
+        tools: s.tools?.map(t => ({ name: t.name, description: t.description })),
+        scope: s.scope,
+      }));
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
   }
 
-  async rewindFiles(userMessageId: string, dryRun?: boolean): Promise<{
-    canRewind: boolean;
-    filesChanged?: string[];
-    insertions?: number;
-    deletions?: number;
-    error?: string;
-  }> {
-    return providerManager().get('claude-code').rewindFiles?.(userMessageId, { dryRun })
-      || { canRewind: false, error: 'Rewind is only supported by Claude Code' };
+  async rewindFiles(userMessageId: string, dryRun?: boolean): Promise<{ canRewind: boolean; filesChanged?: string[]; insertions?: number; deletions?: number; error?: string }> {
+    if (!activeQuery) {
+      return { canRewind: false, error: 'No active session' };
+    }
+    try {
+      return await activeQuery.rewindFiles(userMessageId, { dryRun });
+    } catch (err) {
+      return { canRewind: false, error: err instanceof Error ? err.message : String(err) };
+    }
   }
 
   async listSessions(limit = 50): Promise<unknown[]> {
-    const runtime = resolveRuntimeSelection(false, getResonantConfig());
-    return providerManager().get(runtime.provider).listSessions?.(limit) || [];
+    ensureInit();
+    try {
+      const sessions = await listSessions({ dir: AGENT_CWD, limit });
+      return sessions;
+    } catch (err) {
+      console.error('Failed to list sessions:', err);
+      return [];
+    }
   }
 
-  async processMessage(
-    threadId: string,
-    content: string,
-    threadMeta?: { name: string; type: 'daily' | 'named' },
-    opts?: { platform?: 'web' | 'discord' | 'telegram' | 'api'; platformContext?: string },
-  ): Promise<string> {
+  async processMessage(threadId: string, content: string, threadMeta?: { name: string; type: 'daily' | 'named' }, opts?: {
+    platform?: 'web' | 'discord' | 'telegram' | 'api';
+    platformContext?: string;
+  }): Promise<string> {
+    // Determine priority based on platform
     const platform = opts?.platform || 'web';
     let priority: number;
     if (platform === 'web') {
       priority = PRIORITIES.web_interactive;
     } else if (platform === 'telegram') {
+      // Telegram is owner-only — always high priority
       priority = PRIORITIES.discord_owner;
     } else if (platform === 'discord') {
-      priority = opts?.platformContext?.includes('owner') ? PRIORITIES.discord_owner : PRIORITIES.discord_other;
+      // Check if it's the owner by inspecting platformContext
+      // Discord messages from the owner get higher priority
+      const isOwner = opts?.platformContext?.includes('owner');
+      priority = isOwner ? PRIORITIES.discord_owner : PRIORITIES.discord_other;
     } else {
       priority = PRIORITIES.web_interactive;
     }
@@ -523,29 +364,30 @@ export class AgentService {
   }
 
   async processAutonomous(threadId: string, prompt: string): Promise<string> {
-    return queryQueue.enqueue(PRIORITIES.autonomous, async () => this._processQuery(threadId, prompt, true));
+    return queryQueue.enqueue(PRIORITIES.autonomous, async () => {
+      return this._processQuery(threadId, prompt, true);
+    });
   }
 
-  private async _processQuery(
-    threadId: string,
-    content: string,
-    isAutonomous = false,
-    threadMeta?: { name: string; type: 'daily' | 'named' },
-    platformOpts?: { platform?: 'web' | 'discord' | 'telegram' | 'api'; platformContext?: string },
-  ): Promise<string> {
+  private async _processQuery(threadId: string, content: string, isAutonomous = false, threadMeta?: { name: string; type: 'daily' | 'named' }, platformOpts?: { platform?: 'web' | 'discord' | 'telegram' | 'api'; platformContext?: string }): Promise<string> {
     ensureInit();
     const thread = getThread(threadId);
     if (!thread) throw new Error(`Thread ${threadId} not found`);
 
     const cfg = getResonantConfig();
+
+    // Stream message placeholder
     const streamMsgId = crypto.randomUUID();
+
+    // Response and tool tracking (declared early so hookContext can reference)
     let fullResponse = '';
-    let sessionId: string | null = null;
     const toolInsertions: ToolInsertion[] = [];
     const thinkingBlocks: ThinkingInsertion[] = [];
-    const platform = platformOpts?.platform || 'web';
+    let currentThinkingAccum = '';
 
-    const lifecycleContext: RuntimeLifecycleContext = {
+    // Build hook context
+    const platform = platformOpts?.platform || 'web';
+    const hookContext: HookContext = {
       threadId,
       threadName: threadMeta?.name ?? thread.name,
       threadType: threadMeta?.type ?? thread.type,
@@ -559,88 +401,290 @@ export class AgentService {
       getTextLength: () => fullResponse.length,
     };
 
+    // First message of this session — include static orientation content (tools, skills, vault)
     const isFirstMessage = !thread.current_session_id;
-    const runtime = resolveRuntimeSelection(isAutonomous, cfg);
-    const provider = providerManager().get(runtime.provider);
-    activeRuntimeProvider = provider;
 
-    registry.broadcast({ type: 'stream_start', messageId: streamMsgId, threadId });
+    // Build query options — V1 API (full config support)
+    // Two-tier model: autonomous wakes use cheaper model (configurable)
+    // Interactive queries use primary model (configurable)
+    const model = isAutonomous
+      ? cfg.agent.model_autonomous
+      : (cfg.agent.model || process.env.AGENT_MODEL || 'claude-sonnet-4-6');
+    const options: Options = {
+      model,
+      systemPrompt: claudeMdContent
+        ? { type: 'preset', preset: 'claude_code', append: claudeMdContent }
+        : { type: 'preset', preset: 'claude_code' },
+      cwd: AGENT_CWD,
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
+      maxTurns: 30,
+
+      includePartialMessages: true,
+      thinking: { type: 'adaptive' },
+      hooks: createHooks(hookContext),
+      // Plugin: native skill discovery from .claude/skills/
+      plugins: [{ type: 'local' as const, path: join(AGENT_CWD, '.claude').replace(/\\/g, '/') }],
+      // Explicitly pass MCP servers — SDK isolation mode doesn't auto-discover .mcp.json
+      ...(Object.keys(mcpServersFromConfig).length > 0 && { mcpServers: mcpServersFromConfig }),
+    };
+
+    // Resume existing session if available
+    if (thread.current_session_id) {
+      options.resume = thread.current_session_id;
+    }
+
+    registry.broadcast({
+      type: 'stream_start',
+      messageId: streamMsgId,
+      threadId,
+    });
+
+    let sessionId: string | null = null;
 
     try {
       presenceStatus = 'active';
       registry.broadcast({ type: 'presence', status: 'active' });
 
+      // Write thread ID for CLI tool integration (only if cwd dir exists)
       try {
         const threadFilePath = join(cfg.agent.cwd, '.resonant-thread');
-        if (existsSync(cfg.agent.cwd)) writeFileSync(threadFilePath, threadId);
+        if (existsSync(cfg.agent.cwd)) {
+          writeFileSync(threadFilePath, threadId);
+        }
       } catch {}
 
-      const orientation = await buildOrientationContext(lifecycleContext, isFirstMessage);
-      const threadHistoryContext = buildThreadHistoryContext(threadId, content, provider);
-      const localPathContext = buildLocalPathContext(content);
-      const webUrlContext = await buildWebUrlContext(content);
-      if (localPathContext) {
-        makePreflightToolInsertion(
-          toolInsertions,
-          'file.read',
-          { paths: extractExistingLocalPaths(content), source: 'preflight' },
-          localPathContext,
-        );
-      }
-      if (webUrlContext) {
-        makePreflightToolInsertion(
-          toolInsertions,
-          'web.fetch',
-          { urls: extractWebUrls(content), source: 'preflight' },
-          webUrlContext,
-          webUrlContext.includes('Fetch: failed'),
-        );
-      }
-      const context = [orientation, threadHistoryContext, localPathContext, webUrlContext].filter(Boolean).join('\n\n');
-      const enrichedPrompt = `[Context]\n${context}\n[/Context]\n\n${content}`;
+      // Build orientation context (thread, time, gap, status, vault)
+      // Prepended to prompt because SessionStart hooks don't fire in V1 query()
+      // Static content (CHAT TOOLS, skills, vault path) only on first message of session
+      const orientation = await buildOrientationContext(hookContext, isFirstMessage);
+      const enrichedPrompt = `[Context]\n${orientation}\n[/Context]\n\n${content}`;
 
-      for await (const event of provider.run({
-        provider: runtime.provider,
-        model: runtime.model,
-        prompt: enrichedPrompt,
-        identityPrompt: renderPromptForProvider(runtime.provider),
-        cwd: AGENT_CWD,
-        threadId,
-        sessionId: thread.current_session_id,
-        isAutonomous,
-        lifecycleContext,
-      })) {
-        this.applyRuntimeEvent(
-          event,
-          streamMsgId,
-          toolInsertions,
-          thinkingBlocks,
-          () => fullResponse.length,
-          value => {
-            fullResponse = value;
-            lifecycleContext.getTextLength = () => fullResponse.length;
-          },
-          sid => {
-            sessionId = sid;
-            lifecycleContext.sessionId = sid;
-          },
-        );
+      // Abort controller for stop_generation support
+      activeAbortController = new AbortController();
+      options.abortController = activeAbortController;
+
+      // File checkpointing for rewind support
+      options.enableFileCheckpointing = true;
+
+      // V1 query — single params object with prompt and options
+      const result = query({ prompt: enrichedPrompt, options });
+      activeQuery = result;
+
+      // Refresh MCP server status (non-blocking — caches for settings panel)
+      result.mcpServerStatus().then(statuses => {
+        cachedMcpStatus = statuses.map(s => ({
+          name: s.name,
+          status: s.status,
+          error: s.error,
+          toolCount: s.tools?.length ?? 0,
+          tools: s.tools?.map(t => ({ name: t.name, description: t.description })),
+          scope: s.scope,
+        }));
+        console.log(`MCP status refreshed: ${cachedMcpStatus.length} servers`);
+      }).catch(err => {
+        console.warn('Failed to get MCP status:', err instanceof Error ? err.message : err);
+      });
+
+      // Simplified stream loop — hooks handle tool activity, audit, images
+      // Inner try/catch for AbortError (stop_generation)
+      try {
+      for await (const msg of result) {
+        // Capture session ID from any message
+        if (msg && typeof msg === 'object' && 'session_id' in msg) {
+          const newSessionId = msg.session_id as string;
+          if (newSessionId && newSessionId !== sessionId) {
+            sessionId = newSessionId;
+            // Update hook context so hooks log the correct session
+            hookContext.sessionId = sessionId;
+          }
+        }
+
+        if (!msg || typeof msg !== 'object' || !('type' in msg)) continue;
+
+        const msgType = (msg as any).type;
+
+        // Capture thinking from raw stream events (SDK strips them from assistant messages)
+        if (msgType === 'stream_event') {
+          const streamEvent = (msg as any).event;
+          if (streamEvent?.type === 'content_block_start' && streamEvent?.content_block?.type === 'thinking') {
+            currentThinkingAccum = '';
+          } else if (streamEvent?.type === 'content_block_delta' && streamEvent?.delta?.type === 'thinking_delta') {
+            const thinkingText = streamEvent.delta.thinking || '';
+            if (thinkingText) {
+              currentThinkingAccum += thinkingText;
+            }
+          } else if (streamEvent?.type === 'content_block_stop' && currentThinkingAccum) {
+            const summary = extractThinkingSummary(currentThinkingAccum);
+            thinkingBlocks.push({
+              textOffset: fullResponse.length,
+              content: currentThinkingAccum,
+              summary,
+            });
+            registry.broadcast({ type: 'thinking', content: currentThinkingAccum, summary });
+            currentThinkingAccum = '';
+          }
+        }
+
+        if (msgType === 'assistant') {
+          const assistantMsg = msg as any;
+          if (assistantMsg.message?.content) {
+            for (const block of assistantMsg.message.content) {
+              if (block.type === 'text' && block.text) {
+                if (fullResponse) fullResponse += '\n\n' + block.text;
+                else fullResponse = block.text;
+
+                registry.broadcast({
+                  type: 'stream_token',
+                  messageId: streamMsgId,
+                  token: fullResponse,
+                });
+              }
+              // Thinking blocks are captured from stream_event, not here (avoids duplicates)
+            }
+          }
+        } else if (msgType === 'result') {
+          const resultMsg = msg as any;
+
+          // Extract context window usage from result
+          if (resultMsg.usage || resultMsg.model_usage) {
+            const usage = resultMsg.usage || {};
+            const modelUsage = resultMsg.model_usage;
+
+            // Get context window size from model usage if available
+            if (modelUsage) {
+              for (const model of Object.values(modelUsage) as any[]) {
+                if (model?.context_window) {
+                  contextWindowSize = model.context_window;
+                }
+                if (model?.input_tokens) {
+                  contextTokensUsed = model.input_tokens + (model.output_tokens || 0);
+                }
+              }
+            } else if (usage.input_tokens) {
+              contextTokensUsed = usage.input_tokens + (usage.output_tokens || 0);
+            }
+
+            if (contextWindowSize > 0 && contextTokensUsed > 0) {
+              const percentage = Math.round((contextTokensUsed / contextWindowSize) * 100);
+              console.log(`Context usage: ${contextTokensUsed} / ${contextWindowSize} (${percentage}%)`);
+              registry.broadcast({
+                type: 'context_usage',
+                percentage,
+                tokensUsed: contextTokensUsed,
+                contextWindow: contextWindowSize,
+              });
+            }
+          }
+
+          if (resultMsg.subtype !== 'success') {
+            console.error('Agent error:', resultMsg.subtype, resultMsg.errors);
+          }
+        } else if (msgType === 'system') {
+          const systemMsg = msg as any;
+          // Detect compaction boundary
+          if (systemMsg.subtype === 'compact_boundary' && systemMsg.compact_metadata) {
+            const preTokens = systemMsg.compact_metadata.pre_tokens || contextTokensUsed;
+            console.log(`[Compaction] Context compacted. Pre-tokens: ${preTokens}`);
+            registry.broadcast({
+              type: 'compaction_notice',
+              preTokens,
+              message: `Context compacted (was ${Math.round(preTokens / 1000)}K tokens)`,
+              isComplete: true,
+            });
+            // Reset tracking — new context window after compaction
+            contextTokensUsed = 0;
+            // Reset response buffer — pre-compaction text was incomplete and post-compaction
+            // re-grounding monologue must not leak into Discord/phone replies
+            if (fullResponse) {
+              console.log(`[Compaction] Resetting fullResponse (was ${fullResponse.length} chars, platform: ${platform})`);
+              fullResponse = '';
+            }
+            toolInsertions.length = 0;
+            thinkingBlocks.length = 0;
+          } else if (systemMsg.status === 'compacting') {
+            console.log('[Compaction] Compacting in progress...');
+          }
+        } else if (msgType === 'rate_limit_event') {
+          const rle = msg as any;
+          const info = rle.rate_limit_info;
+          if (info && (info.status === 'rejected' || info.status === 'allowed_warning')) {
+            registry.broadcast({
+              type: 'rate_limit',
+              status: info.status,
+              resetsAt: info.resetsAt,
+              rateLimitType: info.rateLimitType,
+              utilization: info.utilization,
+            });
+            console.log(`[Agent] Rate limit: ${info.status}, type: ${info.rateLimitType}, resets: ${info.resetsAt}`);
+          }
+        } else if (msgType === 'tool_progress') {
+          const tp = msg as any;
+          registry.broadcast({
+            type: 'tool_progress',
+            toolId: tp.tool_use_id,
+            toolName: tp.tool_name,
+            elapsed: tp.elapsed_time_seconds,
+          });
+        }
+      }
+      } catch (abortErr) {
+        if (abortErr instanceof AbortError || (abortErr instanceof Error && abortErr.name === 'AbortError')) {
+          console.log('[Agent] Generation stopped by user');
+          registry.broadcast({ type: 'generation_stopped' });
+        } else {
+          throw abortErr; // Re-throw non-abort errors to outer catch
+        }
       }
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
       console.error('Agent query error:', errMsg, error);
       fullResponse = fullResponse || `[Agent error: ${errMsg}]`;
     } finally {
-      activeRuntimeProvider = null;
-      this.persistSessionTransition(threadId, thread.current_session_id, sessionId, thread.session_type);
+      // Clean up active query tracking
+      activeAbortController = null;
+      activeQuery = null;
+      // Track session transition and update for future resume
+      if (sessionId) {
+        const previousSessionId = thread.current_session_id;
+        const now = new Date().toISOString();
+
+        // End the previous session record (if tracked)
+        if (previousSessionId && previousSessionId !== sessionId) {
+          try {
+            endSessionRecord({ sessionId: previousSessionId, endedAt: now, endReason: 'resumed' });
+          } catch { /* Previous session may not have a record yet */ }
+        }
+
+        // Create a record for the new session
+        if (sessionId !== previousSessionId) {
+          try {
+            createSessionRecord({
+              id: crypto.randomUUID(),
+              threadId,
+              sessionId,
+              sessionType: (thread.session_type as 'v1' | 'v2') || 'v2',
+              startedAt: now,
+            });
+          } catch (err) {
+            if (!(err instanceof Error && err.message.includes('UNIQUE'))) {
+              console.warn('Failed to create session record:', err);
+            }
+          }
+        }
+
+        updateThreadSession(threadId, sessionId);
+      }
       presenceStatus = 'dormant';
       registry.broadcast({ type: 'presence', status: 'dormant' });
     }
 
+    // Build segments for interleaved tool/thinking display
     const segments = buildSegments(fullResponse, toolInsertions, thinkingBlocks);
     const messageMetadata: Record<string, unknown> | undefined =
       segments.length > 0 ? { segments } : undefined;
 
+    // Store final message
     const companionMessage = createMessage({
       id: streamMsgId,
       threadId,
@@ -652,8 +696,14 @@ export class AgentService {
       createdAt: new Date().toISOString(),
     });
 
-    registry.broadcast({ type: 'stream_end', messageId: streamMsgId, final: companionMessage });
+    // End stream
+    registry.broadcast({
+      type: 'stream_end',
+      messageId: streamMsgId,
+      final: companionMessage,
+    });
 
+    // Push notification for offline user
     if (this.pushService && fullResponse) {
       const preview = fullResponse.substring(0, 120).replace(/\n/g, ' ');
       this.pushService.sendIfOffline({
@@ -666,149 +716,5 @@ export class AgentService {
     }
 
     return fullResponse;
-  }
-
-  private applyRuntimeEvent(
-    event: RuntimeEvent,
-    streamMsgId: string,
-    toolInsertions: ToolInsertion[],
-    thinkingBlocks: ThinkingInsertion[],
-    getFullResponseLength: () => number,
-    setFullResponse: (value: string) => void,
-    setSessionId: (value: string) => void,
-  ): void {
-    switch (event.type) {
-      case 'text_delta':
-        setFullResponse(event.fullText);
-        registry.broadcast({ type: 'stream_token', messageId: streamMsgId, token: event.fullText });
-        break;
-      case 'thinking_delta':
-        thinkingBlocks.push({
-          textOffset: getFullResponseLength(),
-          content: event.content,
-          summary: event.summary,
-        });
-        registry.broadcast({ type: 'thinking', content: event.content, summary: event.summary });
-        break;
-      case 'tool_use':
-        toolInsertions.push({
-          textOffset: event.textOffset ?? 0,
-          toolId: event.toolId,
-          toolName: event.toolName,
-          input: event.input,
-        });
-        registry.broadcast({
-          type: 'tool_use',
-          toolId: event.toolId,
-          toolName: event.toolName,
-          input: event.input,
-          isComplete: false,
-          textOffset: event.textOffset,
-        });
-        break;
-      case 'tool_result': {
-        const insertion = toolInsertions.find(t => t.toolId === event.toolId);
-        if (insertion) {
-          insertion.output = event.output?.substring(0, 500);
-          insertion.isError = event.isError;
-        }
-        registry.broadcast({
-          type: 'tool_result',
-          toolId: event.toolId,
-          output: event.output,
-          isError: event.isError,
-        });
-        break;
-      }
-      case 'tool_progress':
-        registry.broadcast({
-          type: 'tool_progress',
-          toolId: event.toolId,
-          toolName: event.toolName,
-          elapsed: event.elapsed,
-        });
-        break;
-      case 'context_usage':
-        contextTokensUsed = event.tokensUsed;
-        contextWindowSize = event.contextWindow;
-        if (event.contextWindow > 0) {
-          registry.broadcast({
-            type: 'context_usage',
-            percentage: Math.round((event.tokensUsed / event.contextWindow) * 100),
-            tokensUsed: event.tokensUsed,
-            contextWindow: event.contextWindow,
-          });
-        }
-        break;
-      case 'compaction':
-        registry.broadcast({
-          type: 'compaction_notice',
-          preTokens: event.preTokens,
-          message: event.message,
-          isComplete: event.isComplete,
-        });
-        if (event.resetResponse) {
-          setFullResponse('');
-          toolInsertions.length = 0;
-          thinkingBlocks.length = 0;
-        }
-        break;
-      case 'rate_limit':
-        registry.broadcast({
-          type: 'rate_limit',
-          status: event.status,
-          resetsAt: event.resetsAt,
-          rateLimitType: event.rateLimitType,
-          utilization: event.utilization,
-        });
-        break;
-      case 'session':
-        setSessionId(event.sessionId);
-        break;
-      case 'mcp_status':
-        cachedMcpStatus = event.servers;
-        registry.broadcast({ type: 'mcp_status_updated', servers: event.servers });
-        break;
-      case 'error':
-        console.warn(`[Runtime] ${event.message}`);
-        break;
-      case 'done':
-        if (event.responseText !== undefined) setFullResponse(event.responseText);
-        break;
-    }
-  }
-
-  private persistSessionTransition(
-    threadId: string,
-    previousSessionId: string | null,
-    sessionId: string | null,
-    sessionType: 'v1' | 'v2',
-  ): void {
-    if (!sessionId) return;
-    const now = new Date().toISOString();
-
-    if (previousSessionId && previousSessionId !== sessionId) {
-      try {
-        endSessionRecord({ sessionId: previousSessionId, endedAt: now, endReason: 'resumed' });
-      } catch {}
-    }
-
-    if (sessionId !== previousSessionId) {
-      try {
-        createSessionRecord({
-          id: crypto.randomUUID(),
-          threadId,
-          sessionId,
-          sessionType: sessionType || 'v2',
-          startedAt: now,
-        });
-      } catch (err) {
-        if (!(err instanceof Error && err.message.includes('UNIQUE'))) {
-          console.warn('Failed to create session record:', err);
-        }
-      }
-    }
-
-    updateThreadSession(threadId, sessionId);
   }
 }

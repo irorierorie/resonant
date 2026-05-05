@@ -6,6 +6,8 @@ import { createHooks, buildOrientationContext, type HookContext, type ToolInsert
 import type { MessageSegment } from '@resonant/shared';
 import type { PushService } from './push.js';
 import { getResonantConfig } from '../config.js';
+import { loadCompanionIdentity } from '../identity/load.js';
+import { describeIdentitySource, renderIdentityPrompt } from '../identity/render.js';
 import crypto from 'crypto';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join, dirname } from 'path';
@@ -22,22 +24,9 @@ function ensureInit() {
   const config = getResonantConfig();
   AGENT_CWD = config.agent.cwd;
 
-  // Load CLAUDE.md
-  const candidates = [
-    config.agent.claude_md_path,
-    join(AGENT_CWD, '.claude/CLAUDE.md'),
-    join(AGENT_CWD, 'CLAUDE.md'),
-  ];
-  const seen = new Set<string>();
-  for (const candidate of candidates) {
-    if (seen.has(candidate)) continue;
-    seen.add(candidate);
-    if (existsSync(candidate)) {
-      claudeMdContent = readFileSync(candidate, 'utf-8');
-      console.log(`Loaded CLAUDE.md from: ${candidate} (${claudeMdContent.length} chars)`);
-      break;
-    }
-  }
+  const identity = loadCompanionIdentity(config);
+  claudeMdContent = renderIdentityPrompt(identity);
+  console.log(`Loaded companion identity from ${describeIdentitySource(identity)} (${claudeMdContent.length} chars)`);
 
   // Load .mcp.json
   const mcpJsonPath = config.agent.mcp_json_path;

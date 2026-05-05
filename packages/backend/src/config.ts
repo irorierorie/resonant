@@ -14,6 +14,8 @@ export interface ResonantConfig {
     companion_name: string;
     user_name: string;
     timezone: string;
+    profile_path: string;
+    companion_md_path: string;
   };
   server: {
     port: number;
@@ -84,6 +86,8 @@ const DEFAULTS: ResonantConfig = {
     companion_name: 'Echo',
     user_name: 'User',
     timezone: 'UTC',
+    profile_path: './identity/companion.profile.yaml',
+    companion_md_path: './identity/companion.md',
   },
   server: {
     port: 3002,
@@ -205,6 +209,8 @@ export function loadConfig(configPath?: string): ResonantConfig {
   // Resolve relative paths against the project root (not cwd)
   const resolveFromRoot = (p: string) => resolve(PROJECT_ROOT, p);
   merged.server.db_path = resolveFromRoot(merged.server.db_path);
+  merged.identity.profile_path = resolveFromRoot(merged.identity.profile_path);
+  merged.identity.companion_md_path = resolveFromRoot(merged.identity.companion_md_path);
   merged.agent.cwd = resolveFromRoot(merged.agent.cwd);
   merged.agent.claude_md_path = resolveFromRoot(merged.agent.claude_md_path);
   merged.agent.mcp_json_path = resolveFromRoot(merged.agent.mcp_json_path);

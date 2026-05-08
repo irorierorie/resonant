@@ -91,6 +91,7 @@ app.use(helmet({
       baseUri: ["'self'"],
       formAction: ["'self'"],
       workerSrc: ["'self'"],
+      upgradeInsecureRequests: null,
     }
   },
   crossOriginOpenerPolicy: { policy: 'same-origin' },

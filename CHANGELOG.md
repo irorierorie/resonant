@@ -2,6 +2,18 @@
 
 All notable changes to Resonant will be documented in this file.
 
+## [2.2.3] - 2026-05-08
+
+### Bug Fixes
+
+- **Mobile white screen on HTTP LAN origins** — Helmet's CSP defaults included `upgrade-insecure-requests`, which forced SvelteKit's dynamic module imports to upgrade to HTTPS on phones hitting the LAN IP (e.g. `192.168.x.x`). Desktop dev escaped this because `localhost` is always a secure context; phones were not, so imports rejected with no TLS available, `kit.start()` never ran, and the SPA never mounted. Opted out of `upgradeInsecureRequests` in the CSP directives — all other helmet defaults preserved. Reported by Ren & Ace.
+
+### Repo Hygiene
+
+- **Branch divergence resolved** — the v2.2.2 scope rollback work had been committed locally but never pushed, while a small test-fixup commit landed on origin/main in parallel. Reconciled via rebase (preserving all May 5 work), so v2.2.3 is the first tagged release on a unified history since v2.2.1.
+
+---
+
 ## [2.2.2] - 2026-05-05
 
 ### Runtime Scope

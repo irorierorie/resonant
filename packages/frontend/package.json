@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@resonant/shared": "*",
-    "dompurify": "^3.2.0",
+    "dompurify": "^3.4.2",
     "marked": "^15.0.0"
   },
   "devDependencies": {

@@ -6,9 +6,11 @@ This guide walks you through setting up Resonant from scratch, even if you've ne
 
 1. **A computer** running Windows, macOS, or Linux
 2. **An internet connection**
-3. **A Claude Code subscription** from Anthropic ([claude.ai/claude-code](https://claude.ai/claude-code))
+3. **One of the following Claude credentials:**
+   - A **Claude Code subscription** from Anthropic ([claude.ai/claude-code](https://claude.ai/claude-code)) — recommended for most users; no per-query cost, just sign in with `claude login`
+   - **Or** an **Anthropic API key** from [console.anthropic.com](https://console.anthropic.com/settings/keys) — required if you want models that aren't on the subscription (e.g. Sonnet 4.5); billed per token
 
-That's it. No API keys to manage. Resonant runs through your Claude Code subscription.
+You set the choice in Resonant's Settings → Authentication after first run. See [AUTH.md](AUTH.md) for the full comparison.
 
 ## Step 1: Install Node.js
 
@@ -40,21 +42,22 @@ node --version    # Should show v20 or higher
 npm --version     # Should show v10 or higher
 ```
 
-## Step 2: Install Claude Code
+## Step 2: Set up your Claude credential
 
-Resonant uses Claude Code's Agent SDK. Install it globally:
+Resonant uses the Claude Agent SDK and reads its credential the same way Claude Code does. Pick the option that fits you:
+
+**Option A — Claude Code subscription (recommended).** Install Claude Code globally and sign in:
 
 ```bash
 npm install -g @anthropic-ai/claude-code
-```
-
-Then log in:
-
-```bash
 claude login
 ```
 
-This opens your browser. Sign in with your Anthropic account. Once you see "Successfully authenticated," you're done. Resonant will use this login — no API keys to copy around.
+This opens your browser. Sign in with your Anthropic account. Once you see "Successfully authenticated," you're done. Resonant will use this login automatically.
+
+**Option B — Anthropic API key.** Skip the Claude Code install. Get a key from [console.anthropic.com](https://console.anthropic.com/settings/keys), then after you start Resonant for the first time (Step 6 below), go to Settings → Authentication, paste the key, and click *Test connection*. Note that every query bills your Anthropic account per token — see [AUTH.md](AUTH.md) for cost details and security implications.
+
+You can switch between the two at any time from Settings — no restart needed.
 
 ## Step 3: Download Resonant
 

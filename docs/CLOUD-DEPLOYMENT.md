@@ -6,15 +6,19 @@ Run Resonant on a VPS so your companion stays online even when your computer is 
 
 Resonant runs on your machine by default. That means when your laptop sleeps, your companion sleeps. A VPS keeps it running 24/7 — the orchestrator fires on schedule, Discord and Telegram stay connected, and you can access it from anywhere.
 
-**Cost:** $4–6/month for a basic VPS. No additional API costs — Resonant uses your Claude Code subscription.
+**Cost:** $4–6/month for a basic VPS, plus your Claude credential cost (subscription if you use Claude Code OAuth, or per-token Anthropic billing if you use an API key).
 
 ## Prerequisites
 
-- A Claude Code subscription (Pro or Max)
+- One of: a **Claude Code subscription** (Pro or Max) for the OAuth token path, **or** an **Anthropic API key** if you'd rather bill per-token directly
 - A VPS with Ubuntu 24.04 (1GB RAM is enough)
-- A domain name (optional, for HTTPS access)
+- A domain name (optional, for HTTPS access — strongly recommended if you'll be configuring an API key through the UI, since the key transits in plaintext over non-HTTPS)
 
-## Step 1: Generate Your OAuth Token
+## Step 1: Prepare your Claude credential
+
+Pick one of these two paths. The rest of the deployment is identical either way.
+
+### Option A — Claude Code subscription (OAuth token)
 
 On your local machine (where you're already logged into Claude Code):
 
@@ -31,6 +35,10 @@ cat ~/.claude.json
 ```
 
 Note the `accountUuid` and `emailAddress`.
+
+### Option B — Anthropic API key
+
+Grab a key from [console.anthropic.com](https://console.anthropic.com/settings/keys) and save it somewhere safe. You'll paste it into Resonant's Settings → Authentication after the deploy is up. **Use HTTPS for the deployment** (see Step 6) — without TLS, the key would transit your network in plaintext when first saved. Every query bills your Anthropic account per token; see [AUTH.md](AUTH.md) for cost guidance.
 
 ## Step 2: Create a VPS
 
@@ -85,6 +93,8 @@ claude --version  # Should show Claude Code version
 ```
 
 ## Step 4: Set Up Claude Code Authentication
+
+> **Skip this step if you chose Option B (API key) in Step 1.** API-key users don't need `~/.claude.json` or the OAuth env var — you'll paste the key into Resonant's Settings → Authentication once the deploy is up (Step 7+). Make sure Step 6 sets up HTTPS first.
 
 Create the auth config:
 

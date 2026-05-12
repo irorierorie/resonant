@@ -2,6 +2,31 @@
 
 All notable changes to Resonant will be documented in this file.
 
+## [Unreleased]
+
+### Features
+
+- **Anthropic API key auth option.** Settings → Authentication now lets users choose between the Claude Code subscription credential (default) and their own Anthropic API key. Switching is hot — the agent's QueryQueue serializes around the env switch, so no restart is needed. Built-in tools, MCP servers, hooks, and the `claude_code` system prompt preset work identically in either mode. New `auth_preferences` table (single-row, DB-backed so changes don't require a YAML reload), new `/api/auth-preferences` route with GET/PUT prefs, POST `/test` for on-demand key validation (no `@anthropic-ai/sdk` dep — uses fetch), POST `/reset-sessions` to invalidate SDK session refs after auth switch since Anthropic's prompt cache is account-scoped. PreferencesPanel gains Authentication, model-gated Models, and Usage sections; Discord/Telegram routing is disclosed in the UI for API-key mode (every external message bills the user's account). Full documentation in `docs/AUTH.md`.
+- **Per-turn token usage tracking** in API-key mode. New `usage_log` table records input, output, cache-creation, and cache-read tokens per model. Settings → Usage shows a rolling 30-day cost estimate and per-model breakdown. Subscription mode skips logging — no cost attribution.
+- **Subscription mode now clears `CLAUDE_CODE_OAUTH_TOKEN` and `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST`** from `process.env` before each query, so the SDK falls through to `~/.claude/.credentials.json` (which has a working refresh path) rather than a frozen OAuth token in shell env (no refresh, eventual silent 401). Fixes a long-standing PM2 gotcha.
+
+### Bug Fixes
+
+- **`digest.ts` now respects the active auth choice** and uses the specific model ID `claude-haiku-4-5` instead of the short `'haiku'` alias, so the Scribe runs under the same credential as the rest of the agent and resolves to a consistent model across subscription and API.
+
+### Security
+
+- **Dependency updates.** Direct: `uuid` 11.1.0 → 11.1.1 (CVE-2026-41907), `dompurify` 3.3.3 → 3.4.2 (CVE-2026-41238/9/40), `@anthropic-ai/claude-agent-sdk` 0.2.98 → 0.2.139. Transitive overrides: `fast-uri` ^3.1.2 (CVE-2026-6321, high), `hono` ^4.12.18 (multiple), `ip-address` ^10.1.1 (CVE-2026-42338). Vulnerability count 8 → 2 moderate (both documented as deferred with reachability rationale in [SECURITY.md](SECURITY.md)).
+- **CI hardening against supply chain attacks** (response to the "mini Shai-Hulud" TanStack npm compromise, May 2026). `.github/workflows/ci.yml` now declares `permissions: { contents: read }` at workflow and job level, uses `npm ci --ignore-scripts` to block postinstall payload execution (with selective `npm rebuild better-sqlite3` for native modules we trust), and runs `npm audit --audit-level=high` as a build-blocking step. The `pull_request` trigger (not `pull_request_target`) ensures contributor PRs run in fork context with no secret access.
+- **SECURITY.md extended** with supply chain hardening doc, deferred vulnerabilities table with reachability rationale, IOC verification commands for users who suspect compromise, and an explanation of what the build pipeline protects against versus what's still the operator's responsibility on a local machine.
+
+### Documentation
+
+- New `docs/AUTH.md` covering both auth modes, prompt cache implications when switching, security stance for local install, Discord/Telegram routing disclosure, and troubleshooting.
+- README, `docs/GETTING-STARTED.md`, and `docs/CLOUD-DEPLOYMENT.md` updated to reflect the dual-credential model. README gains a Security section linking to SECURITY.md.
+
+---
+
 ## [2.2.3] - 2026-05-08
 
 ### Bug Fixes

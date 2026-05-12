@@ -57,6 +57,18 @@ Resonant's CI workflow (`.github/workflows/ci.yml`) is hardened against npm supp
 
 The maintainer manually vets every dependency update against Socket.dev provenance, publish timing, and registry signatures before installing locally.
 
+### What this gets you, and what it doesn't
+
+**No cross-run caching.** Our CI doesn't enable `actions/setup-node`'s `cache: 'npm'` or `actions/cache`. Every run is a fresh runner with an empty npm cache. The cache-poisoning vector used by the Shai-Hulud family — poison a build cache, next run inherits the payload — doesn't apply to us. The trade-off is slower CI; we think the trade is correct.
+
+**Silent ingestion is blocked at the easy point, not the hard one.** `--ignore-scripts` prevents `postinstall` hooks from firing during install — the most common payload trigger and the one used by the TanStack attack's `router_init.js`. What it doesn't (and can't) prevent: package files still land on disk, and if a compromised package made it into our lockfile, that code would still execute when `npm run check` or `npm test` imports it. The defenses against *that* are:
+
+1. **`npm ci` fails on lockfile drift.** An attacker can't silently swap a transitive version in a PR — the diff would show in `package-lock.json` and the install would fail if the lock and the package manifest disagreed.
+2. **`pull_request` workflows run with no secrets.** Even if malicious code did execute during a PR run, the runner has no `GITHUB_TOKEN` write, no npm tokens, no `id-token`. It can burn fork compute but can't exfiltrate from your CI.
+3. **The audit gate catches *known* CVEs.** A zero-day won't be in the GitHub Advisory database yet, so the gate isn't a panic button — but anything publicly disclosed will fail the build before it merges.
+
+**Your local machine is the place where install discipline still matters.** Locally, your shell has whatever secrets you've set up — credentials.json, npm tokens, AWS keys, browser session cookies. A compromised dep installed via a casual `npm install <thing>` would run with all of those in scope. The CI hardening doesn't help here. Before any local install of a new or updated dependency, check Socket.dev for the specific version, look at publish timing, and prefer pinned exact versions over caret ranges for anything you're suspicious of.
+
 ## Current deferred vulnerabilities
 
 The following are tracked but not yet patched. Each has a rationale.

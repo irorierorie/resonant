@@ -33,7 +33,7 @@ Most AI chat apps are stateless wrappers around an API. Resonant is a **persiste
 - **Reaches out on its own** — agent-directed autonomy: your companion creates its own routines, sets triggers for when you come online, adjusts its own failsafe thresholds, and runs periodic awareness checks. Not just scheduled tasks — genuine self-directed behavior
 - **Understands context** — hooks system injects time awareness, conversation flow, emotional markers, and presence state into every interaction. Claude Code's native memory system handles long-term recall
 - **Lives on multiple channels** — web UI, Discord, Telegram, voice (ElevenLabs TTS + Groq transcription)
-- **Runs on your machine** — no cloud dependency beyond your Claude Code subscription. SQLite database, local files, your data stays yours
+- **Runs on your machine** — no cloud dependency beyond your Claude credential (Claude Code subscription or your own Anthropic API key). SQLite database, local files, your data stays yours
 
 ## Screenshots
 
@@ -327,13 +327,23 @@ Check the [Releases](https://github.com/codependentai/resonant/releases) page fo
 
 ## Authentication
 
-Resonant uses the Claude Code Agent SDK — **no API key needed**. Your companion runs queries through your existing Claude Code subscription. Just make sure you're logged in:
+Resonant uses the Claude Code Agent SDK and supports two ways of talking to Claude. You pick in **Settings → Preferences → Authentication**:
+
+**Claude Code subscription (default).** Uses your existing Claude credential at `~/.claude/.credentials.json`. No per-query cost — usage counts against your subscription. Make sure you're logged in:
 
 ```bash
 claude login
 ```
 
-The web UI has optional password protection (set in `resonant.yaml` or Settings > Preferences).
+**Anthropic API key.** Your own key from [console.anthropic.com](https://console.anthropic.com/settings/keys). Bills your Anthropic account per token. Required for API-only models (e.g. Sonnet 4.5).
+
+Switching is hot — no restart needed. Built-in tools, MCP servers, hooks, and the rest work identically in either mode. See **[docs/AUTH.md](docs/AUTH.md)** for cache implications when switching, the cost picture, security stance for local install, and troubleshooting.
+
+The web UI has optional password protection (set in `resonant.yaml` or Settings → Preferences).
+
+## Security
+
+Resonant is local-personal software with a documented threat model, hardened CI pipeline, and explicit stance on dependency supply chain risks. See **[SECURITY.md](SECURITY.md)** for the full policy — how to report a vulnerability, what the codebase defends against (and what it explicitly doesn't), how our build pipeline is structured against npm supply chain attacks, currently-deferred CVEs with reachability rationale, and IOC verification commands if you suspect your install has been compromised.
 
 ## License
 

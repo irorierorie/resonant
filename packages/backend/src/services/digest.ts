@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, appendFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { getDb, getConfig, setConfig, getTodayThread } from './db.js';
 import { getResonantConfig } from '../config.js';
+import { applyAuthToEnv } from './auth-preferences.js';
 import type { AgentService } from './agent.js';
 
 function today(): string {
@@ -138,10 +139,16 @@ Write the digest block for this conversation. Remember: output ONLY the markdown
   try {
     let digestContent = '';
 
+    // Apply user's auth choice (subscription vs api_key) so digest doesn't run
+    // on whatever env state happened to be set by the last agent query.
+    applyAuthToEnv();
+
     for await (const message of query({
       prompt,
       options: {
-        model: 'haiku',
+        // Pinned to a specific model ID rather than the 'haiku' alias so
+        // subscription and api_key auth resolve to the same model.
+        model: 'claude-haiku-4-5',
         systemPrompt: buildScribePrompt(),
         maxTurns: 1,
         permissionMode: 'plan' as any, // Read-only, no tool use

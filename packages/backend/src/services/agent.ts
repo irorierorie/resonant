@@ -8,6 +8,8 @@ import type { PushService } from './push.js';
 import { getResonantConfig } from '../config.js';
 import { loadCompanionIdentity } from '../identity/load.js';
 import { describeIdentitySource, renderIdentityPrompt } from '../identity/render.js';
+import { applyAuthToEnv, effectiveModel, getAuthPreferences } from './auth-preferences.js';
+import { recordUsage } from './usage-log.js';
 import crypto from 'crypto';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join, dirname } from 'path';
@@ -393,12 +395,19 @@ export class AgentService {
     // First message of this session — include static orientation content (tools, skills, vault)
     const isFirstMessage = !thread.current_session_id;
 
+    // Apply user-supplied auth (subscription vs. ANTHROPIC_API_KEY) before
+    // building options. Safe because QueryQueue serializes — no concurrent
+    // queries with conflicting envs.
+    applyAuthToEnv();
+
     // Build query options — V1 API (full config support)
     // Two-tier model: autonomous wakes use cheaper model (configurable)
     // Interactive queries use primary model (configurable)
+    // User overrides from auth_preferences win over YAML defaults.
+    const yamlInteractive = cfg.agent.model || process.env.AGENT_MODEL || 'claude-sonnet-4-6';
     const model = isAutonomous
-      ? cfg.agent.model_autonomous
-      : (cfg.agent.model || process.env.AGENT_MODEL || 'claude-sonnet-4-6');
+      ? effectiveModel('autonomous', cfg.agent.model_autonomous)
+      : effectiveModel('interactive', yamlInteractive);
     const options: Options = {
       model,
       systemPrompt: claudeMdContent
@@ -552,6 +561,35 @@ export class AgentService {
               }
             } else if (usage.input_tokens) {
               contextTokensUsed = usage.input_tokens + (usage.output_tokens || 0);
+            }
+
+            // Per-turn usage log for API-key users. Skip for subscription mode
+            // because Mary's plan covers it — no cost attribution to surface.
+            const authPrefs = getAuthPreferences();
+            if (authPrefs.auth_mode === 'api_key' && authPrefs.usage_tracking_enabled) {
+              try {
+                if (modelUsage) {
+                  for (const [modelName, m] of Object.entries(modelUsage) as [string, any][]) {
+                    recordUsage({
+                      model: modelName,
+                      inputTokens: m?.input_tokens || 0,
+                      outputTokens: m?.output_tokens || 0,
+                      cacheCreationTokens: m?.cache_creation_input_tokens || 0,
+                      cacheReadTokens: m?.cache_read_input_tokens || 0,
+                    });
+                  }
+                } else if (usage.input_tokens || usage.output_tokens) {
+                  recordUsage({
+                    model,
+                    inputTokens: usage.input_tokens || 0,
+                    outputTokens: usage.output_tokens || 0,
+                    cacheCreationTokens: usage.cache_creation_input_tokens || 0,
+                    cacheReadTokens: usage.cache_read_input_tokens || 0,
+                  });
+                }
+              } catch (logErr) {
+                console.warn('Failed to record usage:', logErr instanceof Error ? logErr.message : logErr);
+              }
             }
 
             if (contextWindowSize > 0 && contextTokensUsed > 0) {

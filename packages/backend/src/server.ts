@@ -27,6 +27,7 @@ import { DiscordService } from './services/discord/index.js';
 import { TelegramService } from './services/telegram/index.js';
 import { rateLimiter, securityHeaders } from './middleware/security.js';
 import apiRoutes, { initCcRoutes } from './routes/api.js';
+import authPreferencesRoutes from './routes/auth-preferences.js';
 
 // Load config FIRST — before any other initialization
 const config = loadConfig();
@@ -115,6 +116,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // All API routes — auth middleware is applied selectively inside the router
 app.use('/api', apiRoutes);
+app.use('/api', authPreferencesRoutes);
 
 // Command Center MCP endpoint
 if (config.command_center.enabled) {

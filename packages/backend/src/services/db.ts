@@ -144,6 +144,39 @@ export function initDb(dbPath: string): Database.Database {
   }
   db.exec('CREATE INDEX IF NOT EXISTS idx_session_history_thread_id ON session_history(thread_id)');
 
+  // Auth preferences — single-row table for runtime-mutable auth/model overrides.
+  // Separate from resonant.yaml because (a) holds a secret (API key) that doesn't
+  // belong in install config, and (b) yaml writes don't invalidate the config cache.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS auth_preferences (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      auth_mode TEXT NOT NULL DEFAULT 'subscription' CHECK(auth_mode IN ('subscription', 'api_key')),
+      api_key TEXT,
+      preferred_model TEXT,
+      preferred_model_autonomous TEXT,
+      usage_tracking_enabled INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT NOT NULL
+    )
+  `);
+  db.prepare(
+    `INSERT OR IGNORE INTO auth_preferences (id, auth_mode, updated_at) VALUES (1, 'subscription', ?)`
+  ).run(new Date().toISOString());
+
+  // Per-turn token usage log (only written when auth_mode='api_key' and tracking on).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS usage_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      occurred_at TEXT NOT NULL,
+      model TEXT NOT NULL,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      est_cost_usd REAL NOT NULL DEFAULT 0
+    )
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_usage_log_occurred_at ON usage_log(occurred_at)');
+
   return db;
 }
 
@@ -247,6 +280,19 @@ export function getMostRecentActiveThread(): Thread | null {
 export function updateThreadSession(threadId: string, sessionId: string | null): void {
   const stmt = getDb().prepare('UPDATE threads SET current_session_id = ? WHERE id = ?');
   stmt.run(sessionId, threadId);
+}
+
+/**
+ * Null out current_session_id for every thread. Next message in each thread
+ * starts a fresh SDK session. Useful after switching auth modes, because
+ * Anthropic's prompt cache is account-scoped — a session built under one
+ * credential gets no cache hit when resumed under another.
+ *
+ * Returns the number of threads affected.
+ */
+export function clearAllThreadSessions(): number {
+  const result = getDb().prepare('UPDATE threads SET current_session_id = NULL WHERE current_session_id IS NOT NULL').run();
+  return result.changes;
 }
 
 export function updateThreadActivity(threadId: string, timestamp: string, incrementUnread = false): void {

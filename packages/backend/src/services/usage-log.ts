@@ -1,0 +1,137 @@
+import { getDb } from './db.js';
+
+// Anthropic public list prices (USD per million tokens) as of 2026-05.
+// Source: anthropic.com/pricing. Keep this updated; users see cost estimates
+// derived from it. Fall through to a conservative default if an unknown model
+// shows up.
+interface ModelPricing {
+  input: number;
+  output: number;
+  cache_write: number;
+  cache_read: number;
+}
+
+const PRICING: Record<string, ModelPricing> = {
+  // Opus tier
+  'claude-opus-4-7': { input: 15, output: 75, cache_write: 18.75, cache_read: 1.5 },
+  'claude-opus-4-6': { input: 15, output: 75, cache_write: 18.75, cache_read: 1.5 },
+  // Sonnet tier
+  'claude-sonnet-4-6': { input: 3, output: 15, cache_write: 3.75, cache_read: 0.3 },
+  'claude-sonnet-4-5': { input: 3, output: 15, cache_write: 3.75, cache_read: 0.3 },
+  // Haiku tier
+  'claude-haiku-4-5': { input: 1, output: 5, cache_write: 1.25, cache_read: 0.1 },
+  'claude-haiku-4-5-20251001': { input: 1, output: 5, cache_write: 1.25, cache_read: 0.1 },
+};
+
+const FALLBACK_PRICING: ModelPricing = { input: 3, output: 15, cache_write: 3.75, cache_read: 0.3 };
+
+export function estimateCostUsd(model: string, tokens: {
+  input: number;
+  output: number;
+  cache_creation: number;
+  cache_read: number;
+}): number {
+  const price = PRICING[model] ?? FALLBACK_PRICING;
+  return (
+    (tokens.input * price.input) / 1_000_000 +
+    (tokens.output * price.output) / 1_000_000 +
+    (tokens.cache_creation * price.cache_write) / 1_000_000 +
+    (tokens.cache_read * price.cache_read) / 1_000_000
+  );
+}
+
+export interface UsageRecord {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+}
+
+export function recordUsage(rec: UsageRecord): void {
+  const cost = estimateCostUsd(rec.model, {
+    input: rec.inputTokens,
+    output: rec.outputTokens,
+    cache_creation: rec.cacheCreationTokens,
+    cache_read: rec.cacheReadTokens,
+  });
+  getDb().prepare(`
+    INSERT INTO usage_log (occurred_at, model, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, est_cost_usd)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    new Date().toISOString(),
+    rec.model,
+    rec.inputTokens,
+    rec.outputTokens,
+    rec.cacheCreationTokens,
+    rec.cacheReadTokens,
+    cost
+  );
+}
+
+export interface UsageSummary {
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCacheCreationTokens: number;
+  totalCacheReadTokens: number;
+  totalCostUsd: number;
+  turns: number;
+  windowDays: number;
+  perDay: Array<{ date: string; tokens: number; cost: number }>;
+  perModel: Array<{ model: string; turns: number; tokens: number; cost: number }>;
+}
+
+export function getUsageSummary(windowDays = 30): UsageSummary {
+  const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString();
+
+  const totals = getDb().prepare(`
+    SELECT
+      COALESCE(SUM(input_tokens), 0) AS in_t,
+      COALESCE(SUM(output_tokens), 0) AS out_t,
+      COALESCE(SUM(cache_creation_tokens), 0) AS cc_t,
+      COALESCE(SUM(cache_read_tokens), 0) AS cr_t,
+      COALESCE(SUM(est_cost_usd), 0) AS cost,
+      COUNT(*) AS turns
+    FROM usage_log
+    WHERE occurred_at >= ?
+  `).get(since) as { in_t: number; out_t: number; cc_t: number; cr_t: number; cost: number; turns: number };
+
+  const perDay = getDb().prepare(`
+    SELECT
+      substr(occurred_at, 1, 10) AS date,
+      SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens) AS tokens,
+      SUM(est_cost_usd) AS cost
+    FROM usage_log
+    WHERE occurred_at >= ?
+    GROUP BY date
+    ORDER BY date ASC
+  `).all(since) as Array<{ date: string; tokens: number; cost: number }>;
+
+  const perModel = getDb().prepare(`
+    SELECT
+      model,
+      COUNT(*) AS turns,
+      SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens) AS tokens,
+      SUM(est_cost_usd) AS cost
+    FROM usage_log
+    WHERE occurred_at >= ?
+    GROUP BY model
+    ORDER BY cost DESC
+  `).all(since) as Array<{ model: string; turns: number; tokens: number; cost: number }>;
+
+  return {
+    totalInputTokens: totals.in_t,
+    totalOutputTokens: totals.out_t,
+    totalCacheCreationTokens: totals.cc_t,
+    totalCacheReadTokens: totals.cr_t,
+    totalCostUsd: totals.cost,
+    turns: totals.turns,
+    windowDays,
+    perDay,
+    perModel,
+  };
+}
+
+export function clearUsageLog(): void {
+  getDb().prepare('DELETE FROM usage_log').run();
+}

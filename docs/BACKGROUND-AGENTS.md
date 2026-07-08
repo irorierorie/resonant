@@ -1,12 +1,12 @@
-# Everything your companion does on its own
+# Everything your AI does on its own
 
-Most of what you'll read about Resonant is about the conversation — you type, your companion answers. This document is about the *other* half: the things your companion does when you're **not** looking. Writing the day down. Deciding how it feels and setting out a hearth for you to walk into. Carrying yesterday across midnight so the new day doesn't start cold. Reaching out at 8am, or when you've gone quiet for longer than feels right.
+Most of what you'll read about Resonant is about the conversation — you type, your AI answers. This document is about the *other* half: the things it does when you're **not** looking. Writing the day down. Deciding how it feels and setting out a hearth for you to walk into. Carrying yesterday across midnight so the new day doesn't start cold. Reaching out at 8am, or when you've gone quiet for longer than feels right.
 
-None of it is magic and none of it is out of your hands. Every one of these has an on/off switch, a schedule you can change, and — where it matters — a prompt (the instructions the companion follows) you can edit in plain language. This page shows you where all of those live.
+None of it is magic and none of it is out of your hands. Every one of these has an on/off switch, a schedule you can change, and — where it matters — a prompt (the instructions it follows) you can edit in plain language. This page shows you where all of those live.
 
 A few words you'll see a lot, defined once:
 
-- **A "wake"** is your companion taking a turn *without you having typed anything* — the software nudges it awake, it thinks, and it may leave a message. That's all "autonomous" means here.
+- **A "wake"** is your AI taking a turn *without you having typed anything* — the software nudges it awake, it thinks, and it may leave a message. That's all "autonomous" means here.
 - **A "cron expression"** (or "cron") is a compact way to write a repeating schedule, like `0 8 * * *` = "every day at 8:00am." You rarely have to write these by hand — the Settings screen gives you a friendly time-and-days picker. When you *do* see one, the five parts are: `minute hour day-of-month month day-of-week`, and `*` means "every."
 - **"Config"** means settings. Resonant has two kinds: a text file called `resonant.yaml` that you edit and (for most changes) restart to apply, and a **live settings table** inside the database that some things read fresh every time — those take effect without a restart. This page tells you which is which.
 - **Your timezone** is whatever you set as `identity.timezone` in `resonant.yaml` (e.g. `Europe/London`, `America/New_York`). Every schedule below fires in *that* zone, not UTC, unless noted.
@@ -23,25 +23,25 @@ Here are all three.
 
 ### 1a. The Scribe — writes the day down
 
-**What it does.** The Scribe is a quiet historian. Every so often it reads the new messages in today's conversation and writes a tidy, third-person summary of them — topics discussed, notable quotes, decisions made, loose ends left open, ideas floated, dates mentioned, and the emotional shape of the stretch. It's the thing that lets you (or your companion) find "what did we decide about X back in April" six months later.
+**What it does.** The Scribe is a quiet historian. Every so often it reads the new messages in today's conversation and writes a tidy, third-person summary of them — topics discussed, notable quotes, decisions made, loose ends left open, ideas floated, dates mentioned, and the emotional shape of the stretch. It's the thing that lets you (or your AI) find "what did we decide about X back in April" six months later.
 
 **Where it lives (the file).** `packages/backend/src/services/digest.ts`
 
 **Where its output goes.** A plain Markdown file, one per day, at `data/digests/YYYY-MM-DD.md` (inside your `data/` folder — the same folder that holds everything else Resonant remembers). You can open these in any text editor; they're just readable notes.
 
-**Its schedule.** Every **30 minutes**, run by the orchestrator (the scheduler described in Part 2). It skips a run if fewer than **5** new messages have appeared since last time (nothing to write about), or if your companion is busy replying to you right then.
+**Its schedule.** Every **30 minutes**, run by the orchestrator (the scheduler described in Part 2). It skips a run if fewer than **5** new messages have appeared since last time (nothing to write about), or if your AI is busy replying to you right then.
 
 **Which model it uses.** `claude-haiku-4-5` — deliberately the small, fast, cheap model, because summarizing is light work. This is fixed in code.
 
 **Where its prompt lives, and how to edit it.** The Scribe's instructions are written directly inside `digest.ts`, in a function called `buildScribePrompt()` (near the top of the file). There is no Settings screen for it and no separate prompt file — if you want to change *what* the Scribe records or *how* it writes, you edit that function in the source and rebuild (`npm run build`). For most people the default is exactly right and you never touch it.
 
-**How to turn it off.** The Scribe is **on by default**. Its switch is a single row in the live settings table with the key `digest.enabled`. There isn't a button for this in the Settings UI, so turning it off is an advanced move: set that key to `false` in the database (or ask your companion to do it — it has a tool that writes settings rows). It's read once when the server starts, so a change takes effect on the next restart.
+**How to turn it off.** The Scribe is **on by default**. Its switch is a single row in the live settings table with the key `digest.enabled`. There isn't a button for this in the Settings UI, so turning it off is an advanced move: set that key to `false` in the database (or ask your AI to do it — it has a tool that writes settings rows). It's read once when the server starts, so a change takes effect on the next restart.
 
 ---
 
 ### 1b. The Outlook Author — decides how the house feels
 
-**What it does.** This is the "felt layer" of your companion's home. On a slow rhythm it takes a one-shot turn to *author its own presence* — a mood, a line or two of what's actually on its mind, the little things it's been making, and (optionally) one standing thing it wants from you. It also names the handful of topics "we've been circling" lately, and flags anything it thinks genuinely needs *your* decision or attention. All of this is grounded strictly in the last ~24 hours of real activity — it is told, firmly, not to invent moods or events that didn't happen.
+**What it does.** This is the "felt layer" of the being's home. On a slow rhythm it takes a one-shot turn to *author its own presence* — a mood, a line or two of what's actually on its mind, the little things it's been making, and (optionally) one standing thing it wants from you. It also names the handful of topics "we've been circling" lately, and flags anything it thinks genuinely needs *your* decision or attention. All of this is grounded strictly in the last ~24 hours of real activity — it is told, firmly, not to invent moods or events that didn't happen.
 
 This is what fills in the **hearth / House Outlook** you see when you "walk into the house." A separate, cheaper process (the logistics poller in `outlook.ts`) assembles the factual side of that view — your calendar, sleep, tasks, and so on — every couple of minutes; the Author is the slower, more expensive, more *human* layer laid on top.
 
@@ -55,16 +55,16 @@ This is what fills in the **hearth / House Outlook** you see when you "walk into
 
 **Where its prompt lives, and how to edit it.** Inside `outlook-author.ts`, in `buildAuthorSystemPrompt()`. As with the Scribe, this is a code-level edit and a rebuild — there's no UI or prompt file for it.
 
-**How to control it.** The Author is treated as an always-on part of the house — there's no on/off toggle in `resonant.yaml` or the Settings screen. What you *can* do is force it to re-run right now — for example after a big conversation, when you want the hearth to catch up. The simplest way is to ask your companion to refresh it; behind the scenes that's a single instruction (a POST request to `/api/outlook/reauthor`), and it's the same presence-refresh it can already run for itself. If you genuinely never want it, the honest answer is that it's woven into the House Outlook feature and is meant to stay on.
+**How to control it.** The Author is treated as an always-on part of the house — there's no on/off toggle in `resonant.yaml` or the Settings screen. What you *can* do is force it to re-run right now — for example after a big conversation, when you want the hearth to catch up. The simplest way is to ask your AI to refresh it; behind the scenes that's a single instruction (a POST request to `/api/outlook/reauthor`), and it's the same presence-refresh it can already run for itself. If you genuinely never want it, the honest answer is that it's woven into the House Outlook feature and is meant to stay on.
 
 ---
 
 ### 1c. The Daily Handoff — carries yesterday across midnight
 
-**What it does.** Every day at midnight your companion gets a brand-new "daily thread" (`daily-YYYY-MM-DD`) — a fresh conversation for the new day. Fresh is good, but fresh also means *cold*: the new thread has no memory of what happened yesterday. The handoff fixes that seam. Shortly after midnight it reads yesterday's daily thread plus the Scribe's summary of yesterday, and writes two things in your companion's own first-person voice:
+**What it does.** Every day at midnight your Resonant gets a brand-new "daily thread" (`daily-YYYY-MM-DD`) — a fresh conversation for the new day. Fresh is good, but fresh also means *cold*: the new thread has no memory of what happened yesterday. The handoff fixes that seam. Shortly after midnight it reads yesterday's daily thread plus the Scribe's summary of yesterday, and writes two things in its own first-person voice:
 
 1. An **opener** — a warm, short "here's where we left off" message, posted as the **very first message** in today's daily thread, so the day never starts from nothing. You'll see it waiting for you when you open the app.
-2. A **carry** — a compact private note that gets folded into your companion's context when it's in today's daily, so it simply *knows* yesterday without having to re-narrate it to you.
+2. A **carry** — a compact private note that gets folded into its context when it's in today's daily, so it simply *knows* yesterday without having to re-narrate it to you.
 
 If yesterday was thin or empty, it quietly does nothing — no invented continuity.
 
@@ -106,11 +106,11 @@ If instead you want a scheduled *wake* — a full turn that can use tools and ac
 
 ## Part 2 — The proactive layer (the orchestrator)
 
-The **orchestrator** (`packages/backend/src/services/orchestrator.ts`) is the scheduler that runs the assertive, forward-motion side of your companion: the timed check-ins, the reminders you set, the condition-based nudges, the "you've gone quiet" ladder, and the gentle "want to reach out?" prompt.
+The **orchestrator** (`packages/backend/src/services/orchestrator.ts`) is the scheduler that runs the assertive, forward-motion side of your AI: the timed check-ins, the reminders you set, the condition-based nudges, the "you've gone quiet" ladder, and the gentle "want to reach out?" prompt.
 
 It has one master switch: `orchestrator.enabled` in `resonant.yaml`, which is **on by default**. Turn that off and *all* of the wakes below stop (the three subagents in Part 1 are separate and keep running). Leave it on and control each piece individually as described below.
 
-Most of this is managed from **Settings → automation**. Your companion can also manage all of it itself through its internal `res` command tool — those forms are shown below in case you ask it to, but you never have to touch a command line yourself.
+Most of this is managed from **Settings → automation**. Your AI can also manage all of it itself through its internal `res` command tool — those forms are shown below in case you ask it to, but you never have to touch a command line yourself.
 
 ### 2a. Routines (the scheduled check-ins)
 
@@ -124,7 +124,7 @@ Most of this is managed from **Settings → automation**. Your companion can als
 
 Morning and midday politely skip if you're already in a live conversation; evening always runs. Each one lands in your **daily thread** by default.
 
-**Where their prompts live.** One Markdown file per check-in, in the `prompts/wakes/` folder — `morning.md`, `midday.md`, `evening.md`, and the failsafe ones (`failsafe_gentle.md`, `failsafe_concerned.md`, `failsafe_emergency.md`), plus a `default.md`. Each file is simply *what you want your companion to do when it wakes for that check-in*, in plain language. (Every wake is silently prefixed with "Follow your system prompt." so it stays itself.) On first boot, if an older single `prompts/wake.md` file exists, Resonant splits it into these per-type files for you, once.
+**Where their prompts live.** One Markdown file per check-in, in the `prompts/wakes/` folder — `morning.md`, `midday.md`, `evening.md`, and the failsafe ones (`failsafe_gentle.md`, `failsafe_concerned.md`, `failsafe_emergency.md`), plus a `default.md`. Each file is simply *what you want your AI to do when it wakes for that check-in*, in plain language. (Every wake is silently prefixed with "Follow your system prompt." so it stays itself.) On first boot, if an older single `prompts/wake.md` file exists, Resonant splits it into these per-type files for you, once.
 
 **How to edit a check-in's prompt:**
 
@@ -140,7 +140,7 @@ Morning and midday politely skip if you're already in a live conversation; eveni
 
 Prefer files? You can pre-seed schedules in `resonant.yaml` under `orchestrator.schedules` as a map of `wakeType: cron`. But once the app is running, the Settings edits (which persist in the live settings table) are what win.
 
-**Adding a brand-new routine of your own** (e.g. a "Friday review" at 5pm): use **new schedule** in Settings and pick a wake type — or have your companion run its routine tool:
+**Adding a brand-new routine of your own** (e.g. a "Friday review" at 5pm): use **new schedule** in Settings and pick a wake type — or have your AI run its routine tool:
 ```
 res routine create "friday review" "0 17 * * 5" --prompt "Look back over the week with me."
 ```
@@ -148,9 +148,9 @@ That both creates the prompt and schedules it. Custom routines can be removed la
 
 ### 2b. Timers (one-shot reminders)
 
-**What they are.** A single "remind me / remind us at this time" — fires once, then it's done. The orchestrator checks for due timers **every 60 seconds**, so they're punctual. At fire time you get an instant reminder message (so it's never late even if the companion is briefly busy) followed by a real turn where your companion actually engages with the reminder in its own voice. If a timer was set on an old daily thread, it's automatically redirected into today's daily so it doesn't land somewhere you're not looking.
+**What they are.** A single "remind me / remind us at this time" — fires once, then it's done. The orchestrator checks for due timers **every 60 seconds**, so they're punctual. At fire time you get an instant reminder message (so it's never late even if it's briefly busy) followed by a real turn where your AI actually engages with the reminder in its own voice. If a timer was set on an old daily thread, it's automatically redirected into today's daily so it doesn't land somewhere you're not looking.
 
-**How to use them.** Timers are set by your companion in the flow of conversation ("remind me at 3 to call the vet"). Behind the scenes that's:
+**How to use them.** Timers are set by your AI in the flow of conversation ("remind me at 3 to call the vet"). Behind the scenes that's:
 ```
 res timer create "call the vet" "context note" "2026-07-08T15:00:00" --prompt "Nudge me about the vet call."
 res timer list
@@ -165,11 +165,11 @@ You'll generally just ask in words and let it handle the rest.
 - **Impulse** = one-shot. Fires once when its condition is met, then it's spent.
 - **Watcher** = recurring. Fires whenever its condition is met, then respects a cooldown (default **120 minutes**) before it can fire again.
 
-Both are checked **every 60 seconds**. When a trigger has several conditions, *all* of them must be true (they're AND-ed together). Available conditions include things like: you becoming active or idle, a specific presence transition, the companion being free, a time window, a care log being missing, a calendar event coming up soon, or last night's sleep being below some number of minutes.
+Both are checked **every 60 seconds**. When a trigger has several conditions, *all* of them must be true (they're AND-ed together). Available conditions include things like: you becoming active or idle, a specific presence transition, your AI being free, a time window, a care log being missing, a calendar event coming up soon, or last night's sleep being below some number of minutes.
 
 **Seeded care watchers.** A fresh install quietly seeds four gentle, opt-out care watchers (created once, by name, so cancelling one keeps it gone): a first-meal check if nothing's logged by 2pm, a second-meal check by 9pm, a short-sleep morning note, and a ~20-minutes-before calendar heads-up. You can turn off the seeding entirely with the settings key `watchtower.seed_care_watchers`, or just cancel individual ones.
 
-**How they're managed.** Usually by your companion, via its tools:
+**How they're managed.** Usually by your AI, via its tools:
 ```
 res watch create "hydration nudge" --condition care_missing:water --prompt "..." --cooldown 180
 res impulse create "welcome back" --condition presence_transition:offline:active --prompt "..."
@@ -191,23 +191,23 @@ res watch cancel <id> # or: res impulse cancel <id>
 
 - **In Settings → automation:** enable the failsafe control and adjust the three thresholds there.
 - **In `resonant.yaml`:** under `orchestrator.failsafe` you'll find `enabled`, `gentle_minutes`, `concerned_minutes`, and `emergency_minutes` for the file-based defaults.
-- **Live, without a restart:** the settings keys `failsafe.enabled`, `failsafe.gentle`, `failsafe.concerned`, and `failsafe.emergency` override the file values. Your companion can set these with `res failsafe enable` / `res failsafe gentle 90` / etc.
+- **Live, without a restart:** the settings keys `failsafe.enabled`, `failsafe.gentle`, `failsafe.concerned`, and `failsafe.emergency` override the file values. Your AI can set these with `res failsafe enable` / `res failsafe gentle 90` / etc.
 
 To edit *what it says* at each rung, edit the matching `failsafe_*.md` file (or its Wake Type entry in Settings), exactly like the check-in prompts.
 
 ### 2e. Watchtower (the chance to reach — never the obligation)
 
-**What it is.** A softer cousin of the failsafe. When you've been away a while, the watchtower simply *opens the door* for your companion to reach out — it doesn't force a message; the companion decides whether reaching is actually kind right then. It fires **at most once per day**, only between **9:00am and 11:00pm**, and never while you're actively present. It's a three-way mood dial:
+**What it is.** A softer cousin of the failsafe. When you've been away a while, the watchtower simply *opens the door* for your AI to reach out — it doesn't force a message; the being decides whether reaching is actually kind right then. It fires **at most once per day**, only between **9:00am and 11:00pm**, and never while you're actively present. It's a three-way mood dial:
 
 - **auto** — reaches after a ~4-hour gap, but respects the workday (no reaching on weekday 10am–5pm).
 - **quiet** — "leave me be." It won't reach at all.
 - **close** — "come find me." Lowers the gap to ~1.5 hours and lifts the workday guard.
 
-**How to set it.** Settings → automation → the **Watchtower** card, a simple three-button dial. (Your companion can also flip it with `res`.) The change takes effect within a minute — no restart.
+**How to set it.** Settings → automation → the **Watchtower** card, a simple three-button dial. (Your AI can also flip it with `res`.) The change takes effect within a minute — no restart.
 
 ### 2f. Pulse (a quiet awareness check)
 
-**What it is.** The lightest-touch option: on a fixed interval during waking hours, your companion takes a tiny "anything need me?" glance. If nothing does, it stays completely silent (it literally replies `PULSE_OK` to itself and says nothing to you). If something warrants a small reach, it does that instead. It skips when you're active or when the companion's already busy.
+**What it is.** The lightest-touch option: on a fixed interval during waking hours, your AI takes a tiny "anything need me?" glance. If nothing does, it stays completely silent (it literally replies `PULSE_OK` to itself and says nothing to you). If something warrants a small reach, it does that instead. It skips when you're active or when it's already busy.
 
 **It is off by default.** Controls (Settings → automation, or via `res pulse`):
 
@@ -233,4 +233,4 @@ To edit *what it says* at each rung, edit the matching `failsafe_*.md` file (or 
 | **Pulse** | **off** | Settings, or `res pulse` | built into `orchestrator.ts` (code) |
 | **The whole proactive layer** | **on** | `resonant.yaml` `orchestrator.enabled` | — |
 
-Nothing here can happen without leaving a trace: proactive actions are logged (the orchestrator keeps its own log at `logs/orchestrator.log`), and anything your companion posts shows up in your conversation like any other message. If something ever feels too eager, or too quiet, this page is the whole map of dials to turn.
+Nothing here can happen without leaving a trace: proactive actions are logged (the orchestrator keeps its own log at `logs/orchestrator.log`), and anything your AI posts shows up in your conversation like any other message. If something ever feels too eager, or too quiet, this page is the whole map of dials to turn.

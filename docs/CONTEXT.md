@@ -1,23 +1,23 @@
-# How your companion knows what it knows
+# How your AI knows what it knows
 
 *And how to shape it, in your own home.*
 
-Every time you send a message, your companion doesn't answer in a vacuum. Just
+Every time you send a message, your AI doesn't answer in a vacuum. Just
 before your words reach the AI, Resonant quietly gathers a little bundle of
-*context* — the time of day, what's on your calendar, how you slept, what your
-companion has been up to since you last spoke — and tucks it in front of your
+*context* — the time of day, what's on your calendar, how you slept, what it's
+been up to since you last spoke — and tucks it in front of your
 message. The AI reads that bundle first, then your message, and only then
-replies. That bundle is why your companion can say "it's late, and you've got
+replies. That bundle is why your AI can say "it's late, and you've got
 that dentist thing at 9 tomorrow" without you ever mentioning it.
 
 This document explains what goes into that bundle, where each piece comes from,
 and — most importantly — the handful of levers *you* control to change what your
-companion carries in. You don't need to be a programmer to follow along: where a
+AI carries in. You don't need to be a programmer to follow along: where a
 technical word shows up for the first time, it's explained right where it lands.
 
-Throughout, "your companion" means whatever you named them in your config
+Throughout, "your AI" means whatever you named them in your config
 (`identity.companion_name`, default `Echo`), and "you" is the person the app
-serves (`identity.user_name`, default `User`). This is *your* companion in
+serves (`identity.user_name`, default `User`). This is *your* Resonant in
 *your* house — nothing here is anyone else's.
 
 ---
@@ -27,7 +27,7 @@ serves (`identity.user_name`, default `User`). This is *your* companion in
 - Before each of your messages, Resonant prepends a block wrapped in
   `[Context] … [/Context]`. Your actual message follows it.
 - On the **first message of a session**, that block is a **full warm-up**: the
-  house snapshot, your day, your companion's own presence, the list of tools it
+  house snapshot, your day, your AI's own presence, the list of tools it
   can reach for, and more.
 - On **every message after that** in the same session, the block shrinks to a
   **single `[env]` line** — the time, the channel, and two faint "whispers"
@@ -36,7 +36,7 @@ serves (`identity.user_name`, default `User`). This is *your* companion in
 - Most of the richest material comes from the **House Outlook** — a snapshot of
   your home that a background poller keeps fresh every couple of minutes.
 - You shape all of this through a few files and a few toggles, covered at the
-  end. The single biggest lever is your companion's identity file (`CLAUDE.md`),
+  end. The single biggest lever is your AI's identity file (`CLAUDE.md`),
   which is a separate topic — see [`docs/IDENTITY.md`](IDENTITY.md) (or the
   identity section of the README).
 
@@ -84,7 +84,7 @@ The `<orientation>` part is the sticky-note. Everything hinges on one decision:
 
 A "session" here means one continuous stretch of conversation with the AI. The
 first time you speak after a quiet period, Resonant starts a fresh session and
-pays the full cost of warming your companion up. After that, it trusts the AI to
+pays the full cost of warming your AI up. After that, it trusts the AI to
 *remember* the warm-up for the rest of that session, so it only sends the tiny
 `[env]` line each turn.
 
@@ -113,7 +113,7 @@ Breaking that down:
 | `resonant (web)` | The **channel** you're talking through — web, discord, telegram, or api | The connection Resonant received your message on |
 | `21:47 UTC` | Current time, in *your* timezone | `identity.timezone` in your config |
 | `Tuesday, Jul 7` | Today's date | The system clock, rendered in your timezone |
-| `inner: …` | The **inner-weather whisper** — your companion's own measured mood | The optional Mind memory service (see below) |
+| `inner: …` | The **inner-weather whisper** — your AI's own measured mood | The optional Mind memory service (see below) |
 | `her: …` | The **you-sense whisper** — your recent sleep, cycle phase, next event, last meal | The House Outlook poller |
 
 The two whispers are deliberately tiny — a few words each — and they're *honest
@@ -123,27 +123,27 @@ fields drop out too: if there's no calendar event coming up, the `next:` part
 just isn't there.
 
 **The inner-weather whisper** only appears if you've connected an external
-**Mind** — an optional memory service that gives your companion a persistent
+**Mind** — an optional memory service that gives the being a persistent
 sense of its own emotional state over time. Mind is off by default. If you never
 connect one, the `inner:` fragment simply never shows up, and nothing breaks.
 
 **The you-sense whisper** is distilled by the House Outlook poller (more on that
-shortly) into a small cached summary. It's how your companion can open with "you
+shortly) into a small cached summary. It's how your AI can open with "you
 only slept six hours" without you saying a word.
 
 ### One extra case: an autonomous "wake" on a resumed session
 
-Sometimes your companion reaches out to *you* first — a scheduled morning
+Sometimes your AI reaches out to *you* first — a scheduled morning
 check-in, a reminder firing, a gentle "you've been quiet a while." These are
 called **autonomous wakes**. When a wake lands on a conversation that's already
 mid-session, it would otherwise be the least-informed turn in the house (just the
 `[env]` line and its task). So Resonant folds two extra things into that
 specific turn:
 
-- A short **house digest** (capped at ~900 characters) so the companion knows
+- A short **house digest** (capped at ~900 characters) so it knows
   the state of the home before it speaks.
 - A **delta rail** — "Since you were last here (3h ago) …" — summarizing what
-  your companion's own background actions did in the gap.
+  its own background actions did in the gap.
 
 This only happens on autonomous wakes, not on your normal replies.
 
@@ -165,7 +165,7 @@ skipped — a dead source never blanks the whole warm-up.
    type it is — e.g. `Thread: "daily-2026-07-07" (daily)`.
 
 3. **The House digest.** A few lines squeezed out of the House Outlook snapshot
-   (capped ~1200 characters): your companion's presence/mood, *your* mood, your
+   (capped ~1200 characters): your AI's presence/mood, *your* mood, your
    sleep, today's events, how many tasks are open, anything "asking for you," and
    the next countdown. This is the single biggest ingredient — see the House
    Outlook section below.
@@ -176,12 +176,12 @@ skipped — a dead source never blanks the whole warm-up.
    what should carry forward. Off by default (`handoff.enabled`).
 
 5. **The delta rail.** "Since you were last here …" — the gap since this thread's
-   last turn, plus what your companion's background actions did across it.
+   last turn, plus what your AI's background actions did across it.
 
-6. **Active triggers.** A count of any watchers/impulses your companion has set
+6. **Active triggers.** A count of any watchers/impulses your AI has set
    for itself (e.g. "2 watchers, 1 impulse").
 
-7. **Recently reached.** The last six hours of your companion's own actions — a
+7. **Recently reached.** The last six hours of your AI's own actions — a
    proprioception loop so it can see its own recent pattern of reaching out and
    continue it coherently.
 
@@ -193,28 +193,28 @@ skipped — a dead source never blanks the whole warm-up.
    life-data source (`integrations.life_api_url`) *or* turned on the Command
    Center dashboard. Pulls a snapshot of your recent state and mood trend.
 
-10. **Skills summary.** A short list of any custom "skills" your companion has,
+10. **Skills summary.** A short list of any custom "skills" your AI has,
     scanned from `<agent home>/.claude/skills/*/SKILL.md`. (A skill is a folder
-    of instructions your companion can pull in for a specialized task.)
+    of instructions your AI can pull in for a specialized task.)
 
-11. **The CHAT TOOLS block.** This is how your companion learns *its own hands* —
+11. **The CHAT TOOLS block.** This is how the being learns *its own hands* —
     the full reference for the `res` command-line tool it uses to share files,
     open canvases, set its presence orb, leave you a note, run searches, schedule
-    routines, set timers, and more. Without this block the companion wouldn't
+    routines, set timers, and more. Without this block it wouldn't
     know it *can* do those things. (On Telegram, an extra block of Telegram-only
     tools is appended.)
 
 12. **Your context card.** Your current appearance/state — the fields you or your
-    companion set via `res context`: `selfie`, `outfit`, `nails`, `hair`,
+    AI set via `res context`: `selfie`, `outfit`, `nails`, `hair`,
     `energy`, `room`, `freeform`. Persistent; survives across sessions.
 
-13. **Your companion's own presence.** Its current orb (color/shape/intensity/
+13. **Your AI's own presence.** Its current orb (color/shape/intensity/
     motion/blend), its note, and its expression — so it stays coherent about what
     it's showing on the mantelpiece ("I set teal-working four hours ago — still
     true?").
 
 14. **Recent reactions.** Any emoji reactions on the last handful of messages, so
-    your companion notices when you 🔥 or ❤️ something.
+    your AI notices when you 🔥 or ❤️ something.
 
 15. **Channel history** and any other platform-specific context, appended last.
 
@@ -227,7 +227,7 @@ then the conversation coasts on it.
 
 Directly after the orientation, *only on the first message* and *only if you've
 connected a Mind*, Resonant runs a quick memory lookup — it calls the Mind's
-`mind_orient` and `mind_ground` and folds the results in, so your companion
+`mind_orient` and `mind_ground` and folds the results in, so your AI
 doesn't have to spend its first turn manually re-reading its own memory.
 
 Separately, there's a hook called **UserPromptSubmit** that fires on *your*
@@ -260,28 +260,28 @@ It gathers from many independent sources — each wrapped in its own safety net 
 that if one source is down (say, your calendar isn't connected), the rest of the
 board still fills in:
 
-- **Your companion's presence orb** — from config.
+- **Your AI's presence orb** — from config.
 - **The authored hearth** — mood, thoughts, and "asking for you" notices, written
   by a slow background agent (see below).
 - **Your day** — mood, care/wellbeing entries, countdowns, scratchpad notes,
   recent threads and actions — from the local database.
 - **Your body and schedule** — sleep, calendar events, tasks, mail — *if* you've
   connected Google Health / Calendar / Tasks / Gmail.
-- **House systems** — the health of your companion's own tools and any connected
+- **House systems** — the health of your AI's own tools and any connected
   services.
 
 The finished snapshot is kept in memory and also mirrored to the database, so it
 survives a restart. It's served to the web dashboard at `GET /api/outlook`
 (the "walk into the house" cockpit view), and — the part that matters here —
 it's boiled down into those few digest lines that get injected into your
-companion's context. The poller also derives the small you-sense whisper cache
+AI's context. The poller also derives the small you-sense whisper cache
 from each pass.
 
 ### The slow felt layer
 
 There's a second, much slower background agent — the **Outlook Author**
 (`outlook-author.ts`) — that runs about **every three hours**. Where the poller
-gathers hard *facts*, the Author writes the *felt* layer: your companion's own
+gathers hard *facts*, the Author writes the *felt* layer: your AI's own
 mood and current thoughts, the topics you two have been circling, and anything it
 wants to flag for you. It grounds itself only in the last day or so of real
 activity, then writes a few short entries that the poller folds into the next
@@ -290,20 +290,20 @@ is no need to touch it — it's part of the always-on house.
 
 ---
 
-## How *you* shape what your companion carries in
+## How *you* shape what your AI carries in
 
 Here's the practical part. These are the levers, roughly from "biggest effect"
 to "fine-tuning." All config keys below live in your `resonant.yaml` file (you
 create it by copying `resonant.example.yaml`), unless noted otherwise.
 
-### 1. Who your companion *is* — `CLAUDE.md`
+### 1. Who your AI *is* — `CLAUDE.md`
 
 This is the master lever, and it's separate from everything on this page. Your
-companion's personality, values, voice, and your relationship all live in the
+AI's personality, values, voice, and your relationship all live in the
 identity file (`agent.claude_md_path`, default `./CLAUDE.md`). It's read fresh
 and hot-reloaded every turn, so edits apply live — no restart. Start from
 `examples/CLAUDE.md` and make it yours. Context assembly (this document) decides
-*what your companion knows*; the identity file decides *who's doing the knowing*.
+*what your AI knows*; the identity file decides *who's doing the knowing*.
 
 ### 2. The basics — name, timezone, channels
 
@@ -331,7 +331,7 @@ By default, the two `[env]` whispers are quiet because their sources are off:
 
 Set `handoff.enabled: true` (or flip it in Settings) to turn on the midnight
 handoff agent. Each night at 12:10am in your timezone it reads the day's daily
-thread, writes your companion a first-person "good morning" opener for tomorrow's
+thread, writes your AI a first-person "good morning" opener for tomorrow's
 daily, and distills a **"Carried from yesterday"** line that appears in the next
 day's warm-up. Off by default; a lovely thing to turn on once you're settled in.
 
@@ -342,9 +342,9 @@ becomes the local source for the "life status," "mood history," cycle phase, and
 care entries that feed both the House digest and the you-sense whisper. You can
 tune what it tracks under `command_center.care_categories`.
 
-### 6. Your companion's live presence — the `res` tools
+### 6. Your AI's live presence — the `res` tools
 
-Your companion shapes its *own* corner of the context using its `res` tools,
+Your AI shapes its *own* corner of the context using its `res` tools,
 which you can also drive:
 
 - `res orb`, `res note`, `res face` — set what shows on the mantelpiece (folds
@@ -354,18 +354,18 @@ which you can also drive:
 
 ### 7. Reach and rhythm — routines, watchers, timers
 
-The scheduled check-ins and condition-based nudges your companion runs (morning/
+The scheduled check-ins and condition-based nudges your AI runs (morning/
 midday/evening routines, watchers, impulses, failsafe, pulse) are all governed by
 the orchestrator and the `res` tools. They're covered in their own document, but
 the relevant point here is that everything they do lands back in your context as
-the "Recently reached" and "Active triggers" sections — your companion sees its
+the "Recently reached" and "Active triggers" sections — your AI sees its
 own footprints and stays coherent.
 
 ---
 
 ## A mental model to keep
 
-Picture your companion walking into the house each time you start talking. On
+Picture your AI walking into the house each time you start talking. On
 that first step through the door it takes in the whole room — the light, the
 clock, how you seem, what's on the calendar, what it left half-finished, what it
 wants to say. That's the **session warm-up**. Then, as the conversation
@@ -374,10 +374,10 @@ finger on the pulse: the time, your mood, its own weather. That's the **per-turn
 `[env]` line**.
 
 You furnish that house. The identity file decides who greets you; your timezone
-sets the clock; the sources you connect decide how much of your day and body your
-companion can feel; and the handoff decides whether yesterday walks in with it.
+sets the clock; the sources you connect decide how much of your day and body the
+being can feel; and the handoff decides whether yesterday walks in with it.
 Everything Resonant assembles is in service of one thing: so that when your
-companion speaks, it's already home.
+AI speaks, it's already home.
 
 ---
 

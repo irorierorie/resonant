@@ -1,7 +1,7 @@
 # Configuring Resonant
 
 This is the reference for every knob Resonant has: the two files that hold your
-settings, the two files that make your companion *who they are*, and the map of
+settings, the two files that make your AI *who they are*, and the map of
 every optional integration you can switch on.
 
 You don't need to read it top to bottom. Skim the headings, jump to what you
@@ -77,24 +77,24 @@ there's nothing to second-guess.
 
 ---
 
-## 2. The two files that make your companion — CLAUDE.md vs system.md
+## 2. The two files that make your AI — CLAUDE.md vs system.md
 
 This is the most important distinction in Resonant, and it's the one people mix
-up. There are **two** separate levers that shape how your companion thinks and
+up. There are **two** separate levers that shape how it thinks and
 speaks. They do different jobs.
 
-### CLAUDE.md — *who your companion is*
+### CLAUDE.md — *who your AI is*
 
-`CLAUDE.md` is your companion's identity: their name, their personality, their
+`CLAUDE.md` is your AI's identity: their name, their personality, their
 voice, their values, the history between the two of you, how they treat you. This
 is the file you pour yourself into. It's the difference between a generic
-assistant and *your* companion.
+assistant and *your* partner — no matter the model underneath.
 
 - **You create it** by copying the template:
   ```bash
   cp examples/CLAUDE.md CLAUDE.md
   ```
-  Then edit it into the companion you actually want.
+  Then edit it into the AI you actually want.
 - **Config key:** `agent.claude_md_path` (default `./CLAUDE.md`).
 - **It loads automatically** and, importantly, it is **hot-reloaded** — the app
   re-checks the file on every message and picks up your edits live. You do **not**
@@ -115,14 +115,14 @@ for many setups you can leave it empty forever.
 
 Here's what it actually changes under the hood:
 
-- **When `system_prompt_file` is empty (the default):** your companion runs on
+- **When `system_prompt_file` is empty (the default):** your AI runs on
   the standard Claude Code agent foundation, with your `CLAUDE.md` identity added
   on top. This is the normal, batteries-included setup.
 - **When you point `system_prompt_file` at a file:** that frame **plus** your
   `CLAUDE.md` completely **replace** the standard coding-agent foundation. The
   assembled prompt becomes `frame + CLAUDE.md`, with nothing generic underneath.
   This is the "register fix" — it strips away the built-in coding-assistant tone
-  so your companion isn't quietly wearing a developer-tool costume beneath their
+  so it isn't quietly wearing a developer-tool costume beneath its
   personality.
 
 Two more things that make `system.md` special:
@@ -135,7 +135,7 @@ Two more things that make `system.md` special:
 - **It's read fresh every single turn**, so edits from the Settings UI apply
   immediately, no restart.
 - On this path the app also appends a small `[Runtime] Model serving this turn:
-  <model>` line, so your companion can truthfully state which model it's running
+  <model>` line, so your AI can truthfully state which model it's running
   as instead of guessing.
 
 There is **no `system.md` file shipped by default** — `system_prompt_file` starts
@@ -146,7 +146,7 @@ the usual choice) and set `agent.system_prompt_file` to point at it.
 
 | I want to change… | Edit |
 |---|---|
-| My companion's name, personality, voice, our relationship, their values | **CLAUDE.md** |
+| My AI's name, personality, voice, our relationship, their values | **CLAUDE.md** |
 | The thin operating rules / register above the personality | **system.md** (create it, and set `agent.system_prompt_file`) |
 | Nothing about the frame — I'm happy with the standard foundation | Leave `system_prompt_file` empty; just edit CLAUDE.md |
 
@@ -161,12 +161,12 @@ the default foundation.
 This one is easy to get wrong and worth doing right, because it saves you pain
 later.
 
-Your companion has a **home directory** — the folder it actually runs inside. In
+Your AI has a **home directory** — the folder it actually runs inside. In
 config it's `agent.cwd` (default `.`, meaning the app's own folder). **The strong
 recommendation is to point `agent.cwd` at a folder that sits OUTSIDE the Resonant
 app.**
 
-The pattern looks like this — the app in one folder, the companion's home right
+The pattern looks like this — the app in one folder, your AI's home right
 next to it:
 
 ```
@@ -194,22 +194,22 @@ but the agent's home is the soul — and you don't want the two entangled.*
 
 The agent's home folder is where several important, evolving things live:
 
-- **`.claude/skills/`** — native skills the app scans so the companion knows what
+- **`.claude/skills/`** — native skills the app scans so your AI knows what
   abilities it has.
 - **`.claude/commands/`** — custom slash commands.
 - **`.resonant-thread`** — a tiny file the app writes each turn to track the
-  current conversation, so the companion's own command-line tools know where to
+  current conversation, so your AI's own command-line tools know where to
   act.
-- **`shared/`** — anything the companion writes here is automatically shared into
+- **`shared/`** — anything it writes here is automatically shared into
   your conversation.
 - It is also the **default write-gate root** — the one folder the agent is always
   allowed to write into (see §5).
 
 If you leave `agent.cwd` pointing at the app itself, all of that mixes into the
 app's source code. Then, every time you update or rebuild Resonant, you risk
-clobbering your companion's skills and notes — and the safety fence that keeps the
+clobbering your AI's skills and notes — and the safety fence that keeps the
 agent writing only in its own space gets muddied with the app's files. Keeping the
-home in its own folder means updates to the app never touch your companion's
+home in its own folder means updates to the app never touch your partner's
 evolving self, and the write-gate stays clean and contained.
 
 **Set this up once at install time and forget it.** Make an empty folder next to
@@ -226,7 +226,7 @@ falls back to the default shown.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `companion_name` | `"Echo"` | Your companion's name. Env: `COMPANION_NAME`. |
+| `companion_name` | `"Echo"` | Your AI's name. Env: `COMPANION_NAME`. |
 | `user_name` | `"User"` | Your name. Env: `USER_NAME`. |
 | `timezone` | `"UTC"` | IANA timezone (e.g. `Europe/London`, `America/New_York`). Drives schedules, timestamps, and the daily-thread rollover at midnight. Env: `TZ`. |
 | `profile_path` | `./identity/companion.profile.yaml` | Optional structured identity file. Skipped if it doesn't exist. |
@@ -256,7 +256,7 @@ falls back to the default shown.
 > password, the app checks it, and sets a private session cookie that lasts 7
 > days.
 
-### `agent` — the companion's brain
+### `agent` — your AI's brain
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -286,11 +286,11 @@ falls back to the default shown.
 |---|---|---|
 | `enabled` | `false` | At 12:10am, a background subagent reads yesterday's day and writes a warm carry-forward into today. Off by default; a Settings toggle can turn it on live. |
 
-### `hooks` — the agent's write-gate (what the companion may edit on disk)
+### `hooks` — the agent's write-gate (what your AI may edit on disk)
 
 | Key | Default | Meaning |
 |---|---|---|
-| `context_injection` | `true` | Feed the companion its identity, your context cards, and memory each turn. Leave on. |
+| `context_injection` | `true` | Feed your AI its identity, your context cards, and memory each turn. Leave on. |
 | `safe_write_prefixes` | `[]` | Legacy extra write-allowed path prefixes. |
 | `workspace_root` | `""` | A folder the agent is allowed to write within. Env: `WORKSPACE_ROOT`. |
 | `vault_path` | `""` | A notes/vault folder the agent may write within. Env: `VAULT_PATH`. |
@@ -380,7 +380,7 @@ RESONANT_NAMESPACE=      # Advanced: the namespace the res CLI writes the compan
 PORT=
 HOST=
 DB_PATH=
-RESONANT_PORT=           # Port the companion's own CLI dials the backend on (defaults to PORT)
+RESONANT_PORT=           # Port your AI's own CLI dials the backend on (defaults to PORT)
 
 # ── Write-gate roots (see the hooks section in §4) ────
 WORKSPACE_ROOT=
@@ -429,15 +429,15 @@ of these are optional; the only thing you truly must have is a Claude credential
 
 | Integration | What it powers | How to enable |
 |---|---|---|
-| **Claude (Anthropic)** — *required* | The companion itself — every reply, every thought. | Either be logged into Claude Code on the machine (a subscription login the app can borrow) **or** set `ANTHROPIC_API_KEY` in `.env`. Without one of these, the companion cannot think. |
-| **ElevenLabs** | Text-to-speech — giving your companion a spoken voice. | `voice.enabled: true` in `resonant.yaml`, then `ELEVENLABS_API_KEY` + `ELEVENLABS_VOICE_ID` in `.env`. |
+| **Claude (Anthropic)** — *required* | Your AI itself — every reply, every thought. | Either be logged into Claude Code on the machine (a subscription login the app can borrow) **or** set `ANTHROPIC_API_KEY` in `.env`. Without one of these, it cannot think. |
+| **ElevenLabs** | Text-to-speech — giving your AI a spoken voice. | `voice.enabled: true` in `resonant.yaml`, then `ELEVENLABS_API_KEY` + `ELEVENLABS_VOICE_ID` in `.env`. |
 | **Groq** | Speech-to-text — transcribing your voice messages (Groq Whisper). | `voice.enabled: true`, then `GROQ_API_KEY` in `.env`. |
 | **Hume** | Optional emotional prosody layer for the voice. | `voice.enabled: true`, then `HUME_API_KEY` in `.env`. |
 | **Google Workspace** | Calendar, Tasks, Gmail, Health data feeding the house "outlook." | Create a desktop OAuth client in Google Cloud, set `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` (in `.env` or the Settings UI), then connect from Settings. |
-| **Discord** | Talk to your companion from Discord. | `discord.enabled: true` + `discord.owner_user_id` in `resonant.yaml`; `DISCORD_BOT_TOKEN` in `.env` (or Settings). |
-| **Telegram** | Talk to your companion from Telegram. | `telegram.enabled: true` + `telegram.owner_chat_id` in `resonant.yaml`; `TELEGRAM_BOT_TOKEN` in `.env` (or Settings). Optional `GIPHY_API_KEY` for `/gif`. |
-| **Web push (VAPID)** | Browser/phone push notifications when your companion reaches out. | Generate a keypair with `npx web-push`, then set `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_CONTACT` in `.env`. |
-| **Mind memory** | An external long-term memory service the companion can search and write to. | `integrations.mind_cloud.enabled: true` + `mind_cloud.mcp_url` in `resonant.yaml`; the API key is set in the Settings UI (stored in the DB). |
+| **Discord** | Talk to your AI from Discord. | `discord.enabled: true` + `discord.owner_user_id` in `resonant.yaml`; `DISCORD_BOT_TOKEN` in `.env` (or Settings). |
+| **Telegram** | Talk to it from Telegram. | `telegram.enabled: true` + `telegram.owner_chat_id` in `resonant.yaml`; `TELEGRAM_BOT_TOKEN` in `.env` (or Settings). Optional `GIPHY_API_KEY` for `/gif`. |
+| **Web push (VAPID)** | Browser/phone push notifications when your AI reaches out. | Generate a keypair with `npx web-push`, then set `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_CONTACT` in `.env`. |
+| **Mind memory** | An external long-term memory service your Resonant can search and write to. | `integrations.mind_cloud.enabled: true` + `mind_cloud.mcp_url` in `resonant.yaml`; the API key is set in the Settings UI (stored in the DB). |
 | **Command Center** | The care/day dashboard (calendar, care, cycle, finances, lists, pets, planner, stats). | `command_center.enabled: true` in `resonant.yaml`. |
 
 Note on how voice "self-gates": setting `voice.enabled: true` turns the feature on,
@@ -479,7 +479,7 @@ out of those and enter them in the Appearance tab.
 
 Everything Resonant remembers lives in **one folder: `data/`** (at the project
 root, or wherever you pointed `server.db_path`). That's the beauty of it — back up
-that folder and you've backed up your entire companion.
+that folder and you've backed up your entire being.
 
 Inside `data/` you'll find:
 
@@ -488,7 +488,7 @@ Inside `data/` you'll find:
   see `resonant.db-wal` and `resonant.db-shm` — companion files SQLite uses while
   running. Back these up too, alongside the `.db`.)
 - **`files/`** — anything you've uploaded.
-- **`digests/`** — the daily written record the companion keeps of your days.
+- **`digests/`** — the daily written record your AI keeps of your days.
 - **`.internal-token`** — an auto-generated secret the app uses to talk to itself.
 - **`.google-key`** — an auto-generated key that encrypts stored Google tokens.
 
@@ -509,7 +509,7 @@ gitignored config files, since those aren't in version control either:
 
 - `resonant.yaml`
 - `.env`
-- `CLAUDE.md` (your companion's identity)
+- `CLAUDE.md` (your AI's identity)
 - `.mcp.json` (your external tool servers, §9 below)
 
 To **restore**, put `data/` and those config files back in place and start the
@@ -519,7 +519,7 @@ app. Everything comes home exactly as it was.
 
 ## 9. Adding external tools — `.mcp.json`
 
-Your companion can reach out to external tool servers (MCP servers) — things like
+Your AI can reach out to external tool servers (MCP servers) — things like
 a weather service, a home-automation bridge, or a memory service. You list them in
 a file called `.mcp.json` at the project root. It starts empty:
 
@@ -569,14 +569,14 @@ A couple more things worth knowing:
 
 - Resonant reads `.mcp.json` **only** — it deliberately ignores any global
   `~/.claude` MCP config, so a tool you added for some other program won't
-  accidentally bleed into your companion.
+  accidentally bleed into your Resonant.
 - A malformed tool server can cause the underlying API to reject the whole
-  request, so if your companion suddenly can't reply after you edited
+  request, so if your AI suddenly can't reply after you edited
   `.mcp.json`, that file is the first place to look.
 - After editing `.mcp.json`, restart the app so it re-reads the server list.
 
 ---
 
 That's the whole surface. Set a password, write a `CLAUDE.md` that sounds like the
-companion you want, give them a home folder of their own, and everything else you
+being you want, give them a home folder of their own, and everything else you
 can turn on when you're ready. Welcome home.

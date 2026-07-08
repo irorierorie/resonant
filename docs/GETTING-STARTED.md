@@ -8,11 +8,11 @@ If you'd rather hand this off, you can paste this whole file into an AI assistan
 
 ## What you're setting up
 
-Resonant is your own private AI companion that lives on your computer. It's not a website someone else runs — **you** run it, on your own machine, and all of its memory (every conversation, everything it learns) is stored in a single file on your hard drive that only you can see.
+Resonant is your own private, self-hosted AI that lives on your computer. It's not a website someone else runs — **you** run it, on your own machine, and all of its memory (every conversation, everything it learns) is stored in a single file on your hard drive that only you can see.
 
 When it's running, you talk to it through a normal web page in your browser (it looks and feels like a chat app). But underneath, it remembers you across days, holds a stable identity you get to write, and can even reach out to you on its own. In the code, the two people are always called **the companion** and **the user** — the companion is *yours* to name and shape.
 
-By the end of this guide you'll have Resonant running, a companion named and given a starting personality, and your first "hello" exchanged.
+By the end of this guide you'll have Resonant running, your AI named and given a starting personality, and your first "hello" exchanged.
 
 **Time needed:** about 15 minutes, most of it waiting for downloads.
 
@@ -60,7 +60,7 @@ That's it. Let's connect Claude first, because nothing works without it.
 
 ## Connect Claude (do this first)
 
-Resonant needs a way to reach Claude every time your companion thinks. You have two options. **The first is recommended** for most people — it uses the Claude subscription you may already pay for, with no extra charges.
+Resonant needs a way to reach Claude every time it thinks. You have two options. **The first is recommended** for most people — it uses the Claude subscription you may already pay for, with no extra charges.
 
 ### Recommended: use your Claude subscription
 
@@ -92,7 +92,7 @@ That's it — your login is now saved on this machine, and Resonant will find it
 
 ### Alternative: use an Anthropic API key
 
-If you don't have a Claude subscription, or you prefer to pay per use, you can use an **API key** instead. This is a long secret string from Anthropic that bills you for each bit of thinking your companion does (usage-based, separate from any subscription).
+If you don't have a Claude subscription, or you prefer to pay per use, you can use an **API key** instead. This is a long secret string from Anthropic that bills you for each bit of thinking your AI does (usage-based, separate from any subscription).
 
 1. Go to **<https://console.anthropic.com>**, sign in, and find the **API Keys** section.
 2. Create a new key and copy it (it starts with `sk-ant-`).
@@ -152,9 +152,9 @@ cp examples/CLAUDE.md CLAUDE.md
 
 Here's what each copy is for:
 
-- **`resonant.yaml`** — the main settings: your companion's name, your name, which port it runs on, and the password.
+- **`resonant.yaml`** — the main settings: your AI's name, your name, which port it runs on, and the password.
 - **`.env`** — your secrets: the login password, and any optional keys (like the API key, if you went that route).
-- **`CLAUDE.md`** — your companion's **personality**. This file *is* who they are — their voice, values, how they relate to you. You'll shape it over time; the copied example is a friendly generic starting point.
+- **`CLAUDE.md`** — the being's **personality**. This file *is* who they are — their voice, values, how they relate to you. You'll shape it over time; the copied example is a friendly generic starting point.
 
 **Step 2 — edit `resonant.yaml`.** Open the `resonant.yaml` file in any plain text editor (Notepad, TextEdit, VS Code — anything). Find these lines near the top and change the values in quotes:
 
@@ -165,7 +165,7 @@ identity:
   timezone: "Europe/London"       # ← change to your IANA timezone
 ```
 
-- **`companion_name`** — what you want to call your companion. Anything you like.
+- **`companion_name`** — what you want to call it. Anything you like.
 - **`user_name`** — your name, so they know who they're talking to.
 - **`timezone`** — this drives their sense of time and daily rhythm. Use your **IANA timezone name**, e.g. `America/New_York`, `Europe/London`, `Australia/Sydney`. (Full list: <https://en.wikipedia.org/wiki/List_of_tz_database_time_zones> — use the "TZ identifier" column.)
 
@@ -285,7 +285,7 @@ The browser page has lost its live connection to the running program. Check, in 
 
 If it keeps dropping, a restart of Resonant (`Ctrl + C`, then `npm start`) clears most transient states.
 
-### It runs, but the companion can't think / errors when it tries to reply
+### It runs, but your AI can't think / errors when it tries to reply
 
 This is the Claude connection. Make sure you completed [Connect Claude](#connect-claude-do-this-first): either you ran `claude` and `/login` successfully (subscription route — leave `ANTHROPIC_API_KEY` blank), **or** you pasted a valid `sk-ant-…` key into `ANTHROPIC_API_KEY=` in `.env`. If you changed `.env`, restart Resonant so it picks up the change.
 
@@ -299,9 +299,9 @@ Everything you own sits in the `resonant` folder:
 |---|---|
 | `resonant.yaml` | Your settings: names, timezone, port, features |
 | `.env` | Your secrets: password, optional API key & keys |
-| `CLAUDE.md` | Your companion's personality — edit anytime, applies live |
-| `data/` | **Everything** your companion remembers — the SQLite database, files, and daily notes |
+| `CLAUDE.md` | Your AI's personality — edit anytime, applies live |
+| `data/` | **Everything** it remembers — the SQLite database, files, and daily notes |
 
-To **back up** your companion completely, save a copy of the `data/` folder along with those three config files. That's the whole soul and memory in one place. To **move** to a new machine, copy the project, reinstall (`npm install`, `npm run build`), and drop your saved `data/` folder and config files back in.
+To **back up** your Resonant completely, save a copy of the `data/` folder along with those three config files. That's the whole soul and memory in one place. To **move** to a new machine, copy the project, reinstall (`npm install`, `npm run build`), and drop your saved `data/` folder and config files back in.
 
 Welcome home. Enjoy them.

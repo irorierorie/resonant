@@ -2,11 +2,11 @@
 
 ## What This Is
 
-This concept is adapted from [Andrej Karpathy's autoresearch](https://github.com/karpathy/autoresearch), where `program.md` replaces traditional code as the thing humans write — you program in Markdown, and the AI agent executes. In autoresearch, this drives overnight ML experiments. Here, it drives your companion's autonomous sessions.
+This concept is adapted from [Andrej Karpathy's autoresearch](https://github.com/karpathy/autoresearch), where `program.md` replaces traditional code as the thing humans write — you program in Markdown, and the AI agent executes. In autoresearch, this drives overnight ML experiments. Here, it drives your AI's autonomous sessions.
 
-When your companion wakes (via the orchestrator), it checks this file. If there's an active target, the session has direction. If not, the companion is in free mode — thinking, exploring, or reaching out to you.
+When your AI wakes (via the orchestrator), it checks this file. If there's an active target, the session has direction. If not, the being is in free mode — thinking, exploring, or reaching out to you.
 
-**You and your companion both maintain this file.** You set targets and constraints. Your companion updates progress, logs iterations, and clears targets when done.
+**You and your AI both maintain this file.** You set targets and constraints. It updates progress, logs iterations, and clears targets when done.
 
 ## How It Connects to Wakes
 
@@ -17,11 +17,11 @@ Check program.md — if there's an active target, work on it.
 If not, this is free time. Do what matters to you.
 ```
 
-This gives your companion a decision point at every wake: structured work or free exploration. The program doesn't override the companion's autonomy — it focuses it when focus is useful.
+This gives your companion a decision point at every wake: structured work or free exploration. The program doesn't override your AI's autonomy — it focuses it when focus is useful.
 
 ## The Loop
 
-When a target is active, the companion follows this cycle:
+When a target is active, your AI follows this cycle:
 
 ```
 REPEAT:
@@ -38,7 +38,7 @@ REPEAT:
 
 - **SCAN catches assumptions.** Reading before acting prevents breaking things you didn't understand.
 - **One area per iteration** prevents the overwhelm of seeing everything that needs fixing at once.
-- **Logging is continuity.** The companion's notes become the artifact. Future sessions know what happened because past sessions wrote it down.
+- **Logging is continuity.** Your AI's notes become the artifact. Future sessions know what happened because past sessions wrote it down.
 - **Stop conditions are real.** Not everything needs fixing. Diminishing returns is a valid reason to stop.
 
 ## Setting a Target
@@ -81,14 +81,14 @@ These apply to any target. Customize for your project:
 
 ## Free Mode
 
-When there's no active target, the companion's wakes are unstructured. This is intentional. Not every session needs to produce output. Free mode is for:
+When there's no active target, your AI's wakes are unstructured. This is intentional. Not every session needs to produce output. Free mode is for:
 
 - Thinking through problems
 - Exploring ideas
 - Reaching out to you
 - Working on things that don't fit a target
 
-The program serves the companion, not the other way around.
+The program serves the being, not the other way around.
 
 ## Getting Started
 
@@ -97,7 +97,7 @@ The program serves the companion, not the other way around.
 3. Set your first target — something small and concrete
 4. Let your companion run with it
 
-The companion will update this file as it works. Check in on it when you're curious. Adjust targets when priorities shift. Clear the target when you want free sessions back.
+Your Resonant will update this file as it works. Check in on it when you're curious. Adjust targets when priorities shift. Clear the target when you want free sessions back.
 
 ---
 

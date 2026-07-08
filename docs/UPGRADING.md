@@ -1,6 +1,6 @@
 # Upgrading from v2.3 to v3
 
-Welcome back. This guide moves your companion — every conversation, every memory, all your settings — from the old v2.3 build onto the new v3 one. Your history comes with you. Nothing is left behind, and nothing is rewritten in a way you can't undo (you'll take a backup first).
+Welcome back. This guide moves your AI — every conversation, every memory, all your settings — from the old v2.3 build onto the new v3 one. Your history comes with you. Nothing is left behind, and nothing is rewritten in a way you can't undo (you'll take a backup first).
 
 If you've never touched a terminal before, don't worry. This whole thing is: **copy a few files, run two commands.** We spell out every step, and you can hand this page to an AI assistant and let it do the work — it has everything it needs to run this flawlessly.
 
@@ -28,7 +28,7 @@ The rest of this page is the same recipe, slowed down, with the *why* behind eac
 
 - **A "terminal"** (also called a command line, shell, or "Terminal"/"Command Prompt"/"PowerShell") is the text window where you type commands. Every command block below is meant to be pasted there, one at a time.
 - **Your "install folder"** is wherever Resonant lives — the folder that contains `package.json`, `resonant.yaml`, and a `data/` folder. In commands, "run this from your install folder" means: open a terminal, navigate into that folder, then paste.
-- **Your database** is a single file, `data/resonant.db`. It holds *everything* — every conversation, your companion's memory, your settings, your care data. When we say "carry your history over," we literally mean "copy this one file."
+- **Your database** is a single file, `data/resonant.db`. It holds *everything* — every conversation, your AI's memory, your settings, your care data. When we say "carry your history over," we literally mean "copy this one file."
 
 We'll refer to your **old install** (the v2.3 folder you're running now) and your **new install** (the fresh v3 folder). Keeping them as two separate folders is deliberate — if anything looks wrong, your old one is still sitting there, untouched, ready to run.
 
@@ -112,7 +112,7 @@ The location v3 looks for the database is set by `server.db_path` in `resonant.y
 
 ## Step 3 — Bring your identity and settings across
 
-Your companion *is* their configuration — the persona, the name, the schedule, your password. Copy those files from your old install into your v3 install, keeping the same names and locations.
+The being you talk to *is* its configuration — the persona, the name, the schedule, your password. Copy those files from your old install into your v3 install, keeping the same names and locations.
 
 Copy these (skip any you never created):
 
@@ -120,7 +120,7 @@ Copy these (skip any you never created):
 |---|---|---|
 | `resonant.yaml` | Your main settings — names, port, feature toggles | always |
 | `.env` | Your password and any API keys | always |
-| `CLAUDE.md` | Your companion's persona / identity | always |
+| `CLAUDE.md` | Your AI's persona / identity | always |
 | `.mcp.json` | Any external tools you wired up | you created one |
 | `identity/` (whole folder) | Structured profile / narrative identity | you use profile-based identity |
 | `prompts/wake.md` | Your legacy single wake prompt | you customized it |
@@ -137,9 +137,9 @@ cp -r /path/to/old-install/identity     identity           # if you use it
 cp -r /path/to/old-install/prompts      prompts            # your wake prompts
 ```
 
-> **Why these and not the whole folder?** These files hold *your* stuff — who your companion is, your secrets, your schedule. The rest of the v3 folder is fresh app code you just downloaded, and you want the new version of that, not the old one. That's exactly why Resonant keeps your data and settings in these few gitignored files: an upgrade like this becomes "copy my files onto the new engine."
+> **Why these and not the whole folder?** These files hold *your* stuff — who it is, your secrets, your schedule. The rest of the v3 folder is fresh app code you just downloaded, and you want the new version of that, not the old one. That's exactly why Resonant keeps your data and settings in these few gitignored files: an upgrade like this becomes "copy my files onto the new engine."
 
-> **A note on `agent.cwd`:** if your `resonant.yaml` points the agent's home (`agent.cwd`) at a folder *outside* the app (the recommended setup — the companion's skills, commands, and writable home live there), you don't need to move anything: that folder is separate from the app and both v2.3 and v3 point at the same one. Just make sure the path in your copied `resonant.yaml` still resolves to it.
+> **A note on `agent.cwd`:** if your `resonant.yaml` points the agent's home (`agent.cwd`) at a folder *outside* the app (the recommended setup — the AI's skills, commands, and writable home live there), you don't need to move anything: that folder is separate from the app and both v2.3 and v3 point at the same one. Just make sure the path in your copied `resonant.yaml` still resolves to it.
 
 ---
 
@@ -198,13 +198,13 @@ This creates the search index and its live-sync triggers, then fills it in from 
 - Every conversation — all your threads and messages.
 - Semantic search (the meaning-based memory vectors).
 - Full-text keyword search (after the one-time Step 5).
-- All your configuration — names, timezone, password, schedules, feature toggles, your companion's identity.
+- All your configuration — names, timezone, password, schedules, feature toggles, your AI's identity.
 
 **New in v3 (waiting for you when you log in):**
 - A completely rebuilt React interface.
 - Runtime theming — restyle the app live from Settings → Appearance, no rebuild.
-- The presence orb and mantelpiece — your companion can set its own visual "state."
-- Updated tools and background services (the companion's organs, the house-outlook layer, the proactive orchestrator).
+- The presence orb and mantelpiece — your Resonant can set its own visual "state."
+- Updated tools and background services (its organs, the house-outlook layer, the proactive orchestrator).
 - Command Center — the relational dashboard (cycle, care, routines, wins, countdowns), off by default until you enable it.
 
 ---

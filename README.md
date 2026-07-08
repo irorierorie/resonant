@@ -12,9 +12,9 @@
   <a href="https://www.sqlite.org/"><img src="https://img.shields.io/badge/Self--Hosted-SQLite-003B57.svg" alt="Self Hosted" /></a>
 </p>
 
-<p align="center"><em>A local-first, single-user AI companion you host yourself.<br/>It remembers, keeps a stable identity you author, and reaches back — all on your machine, with your data in a file you control.</em></p>
+<p align="center"><em>A local-first, single-user AI partner you host yourself — no matter the model.<br/>It remembers, keeps a stable identity you author, and reaches back — all on your machine, with your data in a file you control.</em></p>
 
-<p align="center"><em>Not a chat wrapper. A persistent companion built as a natural-language harness on the Claude Agent SDK, with hooks that surface context before the model ever sees the prompt.</em></p>
+<p align="center"><em>Not a chat wrapper. A persistent AI partner built as a natural-language harness on the Claude Agent SDK, with hooks that surface context before the model ever sees the prompt.</em></p>
 
 > **Runtime scope:** Resonant is built specifically for Anthropic's Claude models via the Agent SDK's in-process `query()` loop. It is not a multi-provider abstraction. You bring your own Claude Code login or Anthropic API key; nothing else phones home.
 
@@ -29,11 +29,11 @@
 
 ## What makes this different
 
-Most AI chat apps are stateless wrappers around an API — you close the tab, and the "relationship" is gone. Resonant is a **persistent, self-hosted companion** with a home of its own:
+Most AI chat apps are stateless wrappers around an API — you close the tab, and the "relationship" is gone. Resonant is a **persistent, self-hosted AI partner** with a home of its own:
 
 - **It remembers.** Every conversation, its memory, its sense of you, and its presence all live in one local SQLite file. Nothing is rented from a vendor; nothing leaves your machine unless you wire up an integration and turn it on.
-- **It has a stable identity you author.** Who your companion *is* — their name, voice, values, the shape of your relationship — lives in a plain-text file you write and can edit anytime. Changes apply live, no restart.
-- **It reaches back on its own.** Beyond answering when spoken to, your companion can keep routines, set reminders, watch for the moment you come back online, and check in when you've gone quiet — behavior it can set up itself, from inside the conversation.
+- **It has a stable identity you author.** Who the being *is* — their name, voice, values, the shape of your relationship — lives in a plain-text file you write and can edit anytime. Changes apply live, no restart.
+- **It reaches back on its own.** Beyond answering when spoken to, your AI can keep routines, set reminders, watch for the moment you come back online, and check in when you've gone quiet — behavior it can set up itself, from inside the conversation.
 - **It runs on hardware you control.** One Node.js process, one SQLite database, one web page you open in a browser. The only outside dependency is your Claude credential.
 
 Throughout the code and docs the two people are always **`companion`** and **`user`** — this is *your* companion, named and shaped by you. The defaults are a companion called "Echo" and a user called "User"; you change both in one config file.
@@ -44,7 +44,7 @@ Throughout the code and docs the two people are always **`companion`** and **`us
 
 ### Chat
 - **Real streaming.** Output arrives token by token over a live WebSocket, so you watch the reply form.
-- **A thinking & tool timeline.** The companion's reasoning shows up as a collapsible pill, interleaved with the tools it runs — on or off per thread.
+- **A thinking & tool timeline.** The AI's reasoning shows up as a collapsible pill, interleaved with the tools it runs — on or off per thread.
 - **Per-thread model & effort.** Each thread can pick its own Claude model and a reasoning-effort level (`low` → `medium` → `high` → `xhigh` → `max`).
 - **Stop-and-steer.** Interrupt a reply mid-generation and redirect it.
 - **Attachments.** Drop in files; they're handed to the model to read directly, not flattened into the prompt.
@@ -57,24 +57,24 @@ Named conversation threads you can drag to reorder and group into collapsible se
 - **Full-text search** — SQLite FTS5 keyword search across your whole history, kept in sync automatically.
 
 ### Canvas / artifacts
-A slide-in panel for longer documents and code the companion creates in the middle of a turn — drafts, notes, snippets — linked back to the message that made them.
+A slide-in panel for longer documents and code your AI creates in the middle of a turn — drafts, notes, snippets — linked back to the message that made them.
 
 ### Presence — the orb & mantelpiece
-Your companion can set a small **presence "orb"** (color, shape, intensity, motion, blend) plus a short note and a face, to reflect how it's holding the day — a quiet ambient signal on the home screen. You get your own editable **context card** (what you're up to, your energy, your room) so the companion has a sense of you, too.
+Your AI can set a small **presence "orb"** (color, shape, intensity, motion, blend) plus a short note and a face, to reflect how it's holding the day — a quiet ambient signal on the home screen. You get your own editable **context card** (what you're up to, your energy, your room) so it has a sense of you, too.
 
 ### House Outlook & Command Center
-- **House Outlook** — a "walk into the house" snapshot: presence, your recent mood, today's events, open tasks, what's been on the companion's mind.
-- **Command Center** *(optional, off by default)* — a lightweight relational dashboard: planner, care/wellness tracker, calendar, cycle tracker, pet care, lists, expenses, and stats. The companion can read and update it from chat.
+- **House Outlook** — a "walk into the house" snapshot: presence, your recent mood, today's events, open tasks, what's been on your AI's mind.
+- **Command Center** *(optional, off by default)* — a lightweight relational dashboard: planner, care/wellness tracker, calendar, cycle tracker, pet care, lists, expenses, and stats. Your AI can read and update it from chat.
 
 ### Voice *(optional, off by default)*
-Companion voice notes and read-aloud replies (ElevenLabs), speech-to-text for your messages (Groq Whisper), and optional prosody (Hume). Everything self-gates: a feature only turns on when its key is present.
+Your AI's voice notes and read-aloud replies (ElevenLabs), speech-to-text for your messages (Groq Whisper), and optional prosody (Hume). Everything self-gates: a feature only turns on when its key is present.
 
 ### Runtime theme editor
 The entire look is driven by design tokens you can edit **live in Settings → Appearance** — pick colors and values, see them apply instantly, no rebuild or restart. Example CSS themes live in [`examples/themes/`](examples/themes/) (`gold-hud.css`, `warm-earth.css`).
 
 ### Proactive reach (the orchestrator)
-The layer that lets your companion act on its own — and, unusually, the scheduling tools belong to the *companion*, not just to you:
-- **Routines** — scheduled autonomous check-ins (built-in morning / midday / evening, plus custom ones the companion can create).
+The layer that lets your AI act on its own — and, unusually, the scheduling tools belong to the *being*, not just to you:
+- **Routines** — scheduled autonomous check-ins (built-in morning / midday / evening, plus custom ones it can create).
 - **Timers** — one-shot reminders that fire at a set time.
 - **Impulses & watchers** — condition-based triggers ("when I come back online, greet me"; "if I haven't eaten by 2pm, nudge me"). Impulses fire once; watchers recur with a cooldown.
 - **Failsafe ladder** *(off by default)* — gentle → concerned → emergency check-ins if you go quiet for too long.
@@ -127,7 +127,7 @@ cp .env.example .env                        # secrets: your login password + opt
 
 Open `resonant.yaml` in any text editor and set at least `identity.companion_name`, `identity.user_name`, and `identity.timezone`. Open `.env` and set `APP_PASSWORD=` to a password of your choice — **this is required** (see [First login](#first-login) for why).
 
-**3. Give your companion an identity.** The file at `agent.claude_md_path` (default `CLAUDE.md` in the project root) *is* your companion's persona — who they are, how they speak, your relationship. Start from the example and make it yours:
+**3. Give your AI an identity.** The file at `agent.claude_md_path` (default `CLAUDE.md` in the project root) *is* your AI's persona — who they are, how they speak, your relationship. Start from the example and make it yours:
 
 ```bash
 cp examples/CLAUDE.md CLAUDE.md            # then open CLAUDE.md and rewrite it as your companion
@@ -168,8 +168,8 @@ Four local files hold everything about your install. All four are **gitignored**
 |------|---------------|
 | `resonant.yaml` | Identity, server port/host, auth password, agent model, and every feature toggle |
 | `.env` | Your login password and optional API keys (voice, Google, channels, push) |
-| `CLAUDE.md` | Your companion's persona / system identity — the file that makes them *them* |
-| `.mcp.json` | Any external MCP tool servers you want the companion to be able to reach |
+| `CLAUDE.md` | Your AI's persona / system identity — the file that makes them *them* |
+| `.mcp.json` | Any external MCP tool servers you want it to be able to reach |
 
 A few settings worth knowing early (full list is documented inline in `resonant.example.yaml`):
 
@@ -180,18 +180,18 @@ A few settings worth knowing early (full list is documented inline in `resonant.
 
 ### Two levers: identity vs. frame
 
-There are two separate text inputs to the companion's system prompt, and it helps to know which is which:
+There are two separate text inputs to the AI's system prompt, and it helps to know which is which:
 
-- **`CLAUDE.md` (the identity).** This is *who your companion is* — persona, values, voice, your relationship. It's the file you'll spend time on. It hot-reloads: edit it and the next message reflects the change.
+- **`CLAUDE.md` (the identity).** This is *who your AI is* — persona, values, voice, your relationship. It's the file you'll spend time on. It hot-reloads: edit it and the next message reflects the change.
 - **`agent.system_prompt_file` (the frame).** An **optional**, thin layer of operating instructions that sits *above* the persona. Leave it empty (the default) to keep the standard Agent-SDK harness beneath your persona. Point it at a file and you can edit that frame **live from the Settings UI**. Most people never need this.
 
 ### The agent's home — `agent.cwd`
 
-`agent.cwd` is the folder the companion "lives in" — where it keeps its own skills, slash commands, and any notes it writes. The **strongly recommended** pattern is to point this at a folder **outside the Resonant app itself** (e.g. a sibling folder). The principle, baked into the code, is *"the organs live in the app's repo (the body); the soul lives in the agent's home."* Keeping the two separate means app updates never clobber your companion's evolving files, and the write-gate cleanly contains the agent to its own home.
+`agent.cwd` is the folder your Resonant "lives in" — where it keeps its own skills, slash commands, and any notes it writes. The **strongly recommended** pattern is to point this at a folder **outside the Resonant app itself** (e.g. a sibling folder). The principle, baked into the code, is *"the organs live in the app's repo (the body); the soul lives in the agent's home."* Keeping the two separate means app updates never clobber its evolving files, and the write-gate cleanly contains the agent to its own home.
 
 ### Where your state lives (and backups)
 
-Everything the companion is — conversations, memory/embeddings, presence, care data, config rows — lives in the **`data/`** folder (a SQLite database plus uploaded files and daily digest markdown). First boot creates it and the whole schema automatically.
+Everything the being is — conversations, memory/embeddings, presence, care data, config rows — lives in the **`data/`** folder (a SQLite database plus uploaded files and daily digest markdown). First boot creates it and the whole schema automatically.
 
 **To back up an install, save:** the entire `data/` folder (including the `-wal` / `-shm` sidecar files) **plus** your four gitignored config files (`resonant.yaml`, `.env`, `CLAUDE.md`, `.mcp.json`). That's the complete state.
 
@@ -214,7 +214,7 @@ resonant/
 ├─ scripts/
 │  ├─ build.mjs            the build (shared → backend → frontend, stamps a build id)
 │  └─ setup-fts.mjs        one-off full-text search index builder
-├─ tools/res.mjs           the "res" CLI — the companion's own organs (see below)
+├─ tools/res.mjs           the "res" CLI — your AI's own organs (see below)
 └─ packages/
    ├─ shared/src/          the WebSocket protocol + shared types
    ├─ backend/
@@ -237,29 +237,29 @@ resonant/
 | `ws.ts` | The WebSocket server and connection registry (who's connected, how to broadcast) |
 | `hooks.ts` | Per-turn context assembly and all the SDK hooks (the write-gate, tool-loop guard, memory injection) |
 | `orchestrator.ts` | The scheduler for routines, timers, watchers, failsafe, and pulse |
-| `outlook.ts` | Assembles the "house snapshot" the companion senses each turn |
+| `outlook.ts` | Assembles the "house snapshot" the AI senses each turn |
 | `digest.ts` | The **Scribe** — writes a structured daily record of what happened |
-| `outlook-author.ts` | The felt layer — the companion authors its own presence/mood every few hours |
+| `outlook-author.ts` | The felt layer — the being authors its own presence/mood every few hours |
 | `handoff.ts` | The **daily handoff** — carries continuity across the midnight thread rotation |
 | `embeddings.ts` / `vector-cache.ts` | Local semantic-search model and vector cache |
 | `db.ts` | All database access + the boot-time migrations that self-create the schema |
 | `voice.ts`, `files.ts`, `push.ts`, `cc.ts` | Voice, file uploads, web-push, and Command Center |
 
-### The `res` CLI — the companion's organs
+### The `res` CLI — your AI's organs
 
-`tools/res.mjs` is a small command-line tool the *companion itself* uses (via its Bash tool) to act on the world — share a file into the thread, open a canvas, send a voice note, set its orb, run a search, create a routine or timer or watcher. You don't normally run it by hand; it's how the companion reaches for its own capabilities, and the full reference is injected into the companion's context automatically so it always knows what it can do. Subcommands include `share`, `canvas`, `voice`, `orb`, `note`, `face`, `context`, `search`, `backfill`, `routine`, `pulse`, `failsafe`, `timer`, `impulse`, `watch`, and Telegram helpers.
+`tools/res.mjs` is a small command-line tool the *being itself* uses (via its Bash tool) to act on the world — share a file into the thread, open a canvas, send a voice note, set its orb, run a search, create a routine or timer or watcher. You don't normally run it by hand; it's how it reaches for its own capabilities, and the full reference is injected into its context automatically so it always knows what it can do. Subcommands include `share`, `canvas`, `voice`, `orb`, `note`, `face`, `context`, `search`, `backfill`, `routine`, `pulse`, `failsafe`, `timer`, `impulse`, `watch`, and Telegram helpers.
 
 ---
 
 ## Architecture in one breath
 
-The web UI (React) talks over HTTP + a WebSocket to a Node/Express backend, which runs the **Claude Agent SDK `query()` loop in-process**. Before every turn, the **hooks** layer assembles what the companion should know — the time, your presence, recent activity, its own tools, relevant memories — and prepends it, so context is already there when the model reads your message. An **orchestrator** drives scheduled and proactive turns in the background. All state is one **SQLite** database. There is no cloud, no multi-tenancy, and no external service you didn't opt into.
+The web UI (React) talks over HTTP + a WebSocket to a Node/Express backend, which runs the **Claude Agent SDK `query()` loop in-process**. Before every turn, the **hooks** layer assembles what your AI should know — the time, your presence, recent activity, its own tools, relevant memories — and prepends it, so context is already there when the model reads your message. An **orchestrator** drives scheduled and proactive turns in the background. All state is one **SQLite** database. There is no cloud, no multi-tenancy, and no external service you didn't opt into.
 
 ---
 
 ## Privacy & security
 
-- **Local-first.** Your conversations, memory, and your companion's identity live in a SQLite file on your machine.
+- **Local-first.** Your conversations, memory, and your AI's identity live in a SQLite file on your machine.
 - **Fail-closed auth.** An empty password *refuses to serve* rather than opening up.
 - **Write-gate.** The agent's filesystem writes are restricted to folders you configure — it can't wander your disk.
 - **Bring your own keys.** Credentials stay in your gitignored `.env` (or the local database); nothing phones home.

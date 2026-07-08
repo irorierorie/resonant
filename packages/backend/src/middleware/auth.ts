@@ -108,7 +108,11 @@ export function loginHandler(req: Request, res: Response): void {
     expiresAt: expiresAt.toISOString(),
   });
 
-  const isSecure = req.headers['x-forwarded-proto'] === 'https' || process.env.NODE_ENV === 'production';
+  // secure/sameSite must reflect the ACTUAL request transport, NOT NODE_ENV.
+  // NODE_ENV=production over plain HTTP (LAN / tailnet / pm2 without TLS) would
+  // set a Secure cookie the browser silently drops — login appears to succeed
+  // but the session cookie never sticks and the WS upgrade dies with a 401.
+  const isSecure = req.secure || req.headers['x-forwarded-proto'] === 'https';
   res.cookie(COOKIE_NAME, sessionToken, {
     httpOnly: true,
     secure: isSecure,
@@ -121,10 +125,13 @@ export function loginHandler(req: Request, res: Response): void {
 }
 
 export function logoutHandler(req: Request, res: Response): void {
+  // Mirror the transport-based attributes the cookie was SET with, or the
+  // clear won't target the same cookie.
+  const isSecure = req.secure || req.headers['x-forwarded-proto'] === 'https';
   res.clearCookie(COOKIE_NAME, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
+    secure: isSecure,
+    sameSite: isSecure ? 'strict' : 'lax',
     path: '/',
   });
   res.json({ success: true });

@@ -3,6 +3,10 @@
 -- Ported from Vale Home with genericized defaults
 
 -- Care entries — toggles, ratings, counters, notes
+-- source: provenance of the last write — 'ui' (browser page) or 'mcp'
+-- (companion in chat). Fresh installs get it here; existing DBs get it via the
+-- guarded ALTER in db.ts initDb (this file re-runs every boot, so a raw ALTER
+-- here would throw on the second run).
 CREATE TABLE IF NOT EXISTS care_entries (
   id TEXT PRIMARY KEY,
   date TEXT NOT NULL,
@@ -10,6 +14,7 @@ CREATE TABLE IF NOT EXISTS care_entries (
   category TEXT NOT NULL,
   value TEXT,
   note TEXT,
+  source TEXT NOT NULL DEFAULT 'ui',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -197,4 +202,20 @@ CREATE TABLE IF NOT EXISTS scratchpad_notes (
   created_by TEXT DEFAULT 'user',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Care routines (category maps to care_entries.category)
+-- days: 'daily' or CSV of lowercase weekdays ('tuesday' or 'monday,thursday')
+-- NOTE: this table was renamed in a prior schema revision. Installs upgraded
+-- from that older schema will still carry the previous table name; a fresh
+-- install creates `care_routines` directly.
+CREATE TABLE IF NOT EXISTS care_routines (
+  id TEXT PRIMARY KEY,
+  label TEXT NOT NULL,
+  category TEXT NOT NULL,
+  window_start TEXT,
+  window_end TEXT NOT NULL,
+  days TEXT NOT NULL DEFAULT 'daily',
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

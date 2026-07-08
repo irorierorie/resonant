@@ -14,6 +14,7 @@ import { splitResponse, getTelegramThreadId } from './utils.js';
 import type { AgentService } from '../agent.js';
 import type { VoiceService } from '../voice.js';
 import { createMessage, createThread, getThread, getMostRecentActiveThread, updateThreadActivity, setConfig } from '../db.js';
+import { getBotToken } from '../bot-token.js';
 import { saveFile } from '../files.js';
 import { getResonantConfig } from '../../config.js';
 import type { registry as registryInstance } from '../ws.js';
@@ -47,8 +48,8 @@ export class TelegramService {
     this.registry = registry;
     this.voiceService = voiceService;
 
-    const token = process.env.TELEGRAM_BOT_TOKEN;
-    if (!token) throw new Error('TELEGRAM_BOT_TOKEN not set');
+    const token = getBotToken('telegram');
+    if (!token) throw new Error('TELEGRAM_BOT_TOKEN not set in DB or env');
 
     this.bot = new Telegraf(token);
     this.debouncer = new TelegramDebouncer();
@@ -70,6 +71,28 @@ export class TelegramService {
         console.log(`[Telegram] Incoming message types: [${types.join(', ')}]${msg.voice ? ` voice_duration=${msg.voice.duration}s mime=${msg.voice.mime_type}` : ''}`);
       }
       return next();
+    });
+
+    // /start command — identify and store owner's chat ID.
+    // MUST be registered BEFORE bot.on('text'): Telegraf runs handlers in
+    // registration order, and bot.on('text') consumes /start (it never calls
+    // next()), replying "send /start first" — so if the command handler is
+    // registered after it, /start is swallowed and the owner can NEVER register
+    // (the bot tells you to /start in response to /start itself — catch-22).
+    this.bot.command('start', async (ctx) => {
+      const chatId = ctx.chat.id.toString();
+      const telegramConfig = getTelegramConfig();
+
+      if (!telegramConfig.ownerChatId) {
+        setConfig('telegram.ownerChatId', chatId);
+        await ctx.reply(`Connected. This chat is now linked to ${config.identity.companion_name}.`);
+        console.log(`[Telegram] Owner chat ID stored: ${chatId}`);
+      } else if (telegramConfig.ownerChatId === chatId) {
+        await ctx.reply('Already connected.');
+      } else {
+        await ctx.reply('This bot is private.');
+        console.log(`[Telegram] Rejected /start from unknown chat: ${chatId}`);
+      }
     });
 
     // Handle all text messages
@@ -97,25 +120,6 @@ export class TelegramService {
     this.bot.on('document', async (ctx) => {
       const caption = ctx.message.caption || `[File: ${ctx.message.document.file_name || 'document'}]`;
       await this.handleMessage(ctx, caption);
-    });
-
-    // /start command — identify and store owner's chat ID
-    this.bot.command('start', async (ctx) => {
-      const chatId = ctx.chat.id.toString();
-      const telegramConfig = getTelegramConfig();
-
-      if (!telegramConfig.ownerChatId) {
-        // First connection — store this as the owner's chat
-        setConfig('telegram.ownerChatId', chatId);
-        await ctx.reply(`Connected. This chat is now linked to ${config.identity.companion_name}.`);
-        console.log(`[Telegram] Owner chat ID stored: ${chatId}`);
-      } else if (telegramConfig.ownerChatId === chatId) {
-        await ctx.reply('Already connected.');
-      } else {
-        // Not the owner — reject
-        await ctx.reply('This bot is private.');
-        console.log(`[Telegram] Rejected /start from unknown chat: ${chatId}`);
-      }
     });
 
     this.bot.catch((err) => {
@@ -656,9 +660,9 @@ export class TelegramService {
   }
 
   async start(): Promise<void> {
-    const token = process.env.TELEGRAM_BOT_TOKEN;
+    const token = getBotToken('telegram');
     if (!token) {
-      console.error('[Telegram] TELEGRAM_BOT_TOKEN not set — gateway disabled');
+      console.error('[Telegram] no token in DB or env — gateway disabled');
       return;
     }
 
@@ -745,5 +749,12 @@ export class TelegramService {
       connected: this.isConnected(),
       restarts: this.restartAttempts,
     };
+  }
+
+  /** Resolve the bot's @username via getMe — thin exposure for the Settings
+   *  channel test (bot is private; the route can't reach bot.telegram directly). */
+  async getBotUsername(): Promise<string> {
+    const me = await this.bot.telegram.getMe();
+    return me.username;
   }
 }

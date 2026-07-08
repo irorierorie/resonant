@@ -14,20 +14,25 @@ import cors from 'cors';
 import { createServer } from 'http';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync } from 'fs';
 import { loadConfig } from './config.js';
 import { initDb, deleteExpiredSessions } from './services/db.js';
 import { loadVectorCache } from './services/vector-cache.js';
 import { createWebSocketServer, setVoiceService, setGatewayServices, registry } from './services/ws.js';
 import { Orchestrator } from './services/orchestrator.js';
-import { AgentService } from './services/agent.js';
+import { AgentService, registerAgentService } from './services/agent.js';
 import { VoiceService } from './services/voice.js';
 import { PushService } from './services/push.js';
 import { DiscordService } from './services/discord/index.js';
 import { TelegramService } from './services/telegram/index.js';
 import { rateLimiter, securityHeaders } from './middleware/security.js';
+import { internalOnly, internalTokenFingerprint, internalTokenSource } from './middleware/internal-token.js';
 import apiRoutes, { initCcRoutes } from './routes/api.js';
 import authPreferencesRoutes from './routes/auth-preferences.js';
+import googleRoutes from './routes/google-routes.js';
+import { startOutlookPoller, stopOutlookPoller } from './services/outlook.js';
+import { startOutlookAuthor, stopOutlookAuthor } from './services/outlook-author.js';
+import { startHandoffSchedule, stopHandoffSchedule } from './services/handoff.js';
 
 // Load config FIRST — before any other initialization
 const config = loadConfig();
@@ -117,11 +122,32 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // All API routes — auth middleware is applied selectively inside the router
 app.use('/api', apiRoutes);
 app.use('/api', authPreferencesRoutes);
+// Google connect REST (localhost-guarded internally; mounted always so the
+// Settings surface can read status even when Google isn't configured yet).
+app.use('/api/google', googleRoutes);
 
-// Command Center MCP endpoint
+// Command Center MCP endpoint. LOOPBACK-ONLY: called only by the in-app agent's
+// SDK over loopback, never by a browser. Gated by the internal shared token
+// (NOT a source-IP check, which is defeated behind cloudflared). The agent
+// passes the token via the `headers` block in .mcp.json (command-center entry).
 if (config.command_center.enabled) {
-  import('./routes/cc-mcp.js').then(m => app.use('/mcp/cc', m.default));
+  import('./routes/cc-mcp.js').then(m => app.use('/mcp/cc', internalOnly, m.default));
 }
+
+// Workspace (Google) MCP endpoint — ALWAYS mounted (like /api/google/*). With
+// UI-driven creds the user never edits yaml, so a static config.google.enabled
+// gate is the wrong lever. The MCP's tools/list is itself toggle-aware: it only
+// exposes `gcal` when Google is connected AND the Calendar toggle is on, and
+// returns an empty tool list otherwise. So mounting while not-yet-configured /
+// disconnected is harmless — the agent simply sees no workspace tools until the
+// user pastes creds, connects, and flips Calendar (no yaml edit, no restart).
+// (The static config.google.enabled flag is now unused for mounting; it remains
+// in config only as a legacy/override hint and can be removed in a later pass.)
+// LOOPBACK-ONLY (same posture as /mcp/cc): the `google` / `google_health` tools
+// are called only by the in-app agent's SDK over loopback. Gated by the internal
+// shared token (the agent passes it via the `headers` block in .mcp.json,
+// workspace entry) — a source-IP check would be defeated behind cloudflared.
+import('./routes/workspace-mcp.js').then(m => app.use('/mcp/workspace', internalOnly, m.default));
 
 // Serve frontend static build (works in dev too if frontend is pre-built)
 const frontendPaths = [
@@ -129,6 +155,25 @@ const frontendPaths = [
   join(__dirname, '../../../packages/frontend/build'), // From src/ via tsx
 ];
 const frontendBuildPath = frontendPaths.find(p => existsSync(p));
+
+// Build-id: identifies the exact frontend bundle this server is serving. Written
+// by scripts/write-build-id.mjs (build/.build-id) with the SAME value vite bakes
+// into __BUILD_ID__ at compile time. The /api/version route returns this so a
+// stale mobile tab can detect a newer deploy and offer to reload. Read once at
+// boot — the served bundle does not change while the process is up.
+{
+  let buildId = process.env.BUILD_ID ?? 'dev';
+  if (frontendBuildPath) {
+    try {
+      buildId = readFileSync(join(frontendBuildPath, '.build-id'), 'utf-8').trim() || buildId;
+    } catch {
+      // No .build-id (e.g. dev / pre-stamp build) — keep env/dev fallback.
+    }
+  }
+  app.locals.buildId = buildId;
+  console.log(`Frontend build id: ${buildId}`);
+}
+
 if (frontendBuildPath) {
   console.log(`Serving frontend from: ${frontendBuildPath}`);
   app.use(express.static(frontendBuildPath));
@@ -150,10 +195,17 @@ const server = createServer(app);
 
 // Initialize agent service (shared between WebSocket and orchestrator)
 const agentService = new AgentService();
+registerAgentService(agentService); // busy-check for background query() callers (Hale #1)
 
-// Initialize voice service
+// Initialize voice service (config-gated for logging; the service itself
+// self-gates on key presence via canTranscribe / canTTS getters)
 const voiceService = new VoiceService();
 setVoiceService(voiceService);
+if (config.voice.enabled) {
+  console.log(`[Voice] Enabled — STT ${voiceService.canTranscribe ? 'ready' : 'NO KEY'}, TTS ${voiceService.canTTS ? 'ready' : 'NO KEY/VOICE_ID'}`);
+} else {
+  console.log('[Voice] Disabled via config.voice.enabled');
+}
 
 // Initialize push service
 const pushService = new PushService(
@@ -165,12 +217,13 @@ agentService.setPushService(pushService);
 
 // Initialize Discord gateway (config-gated with env fallback)
 import { getConfigBool } from './services/db.js';
+import { hasBotToken } from './services/bot-token.js';
 
 let discordService: DiscordService | null = null;
 
 // Check config DB first, fall back to config file / env var for first boot
 const discordEnabled = getConfigBool('discord.enabled', config.discord.enabled);
-if (discordEnabled && process.env.DISCORD_BOT_TOKEN) {
+if (discordEnabled && hasBotToken('discord')) {
   discordService = new DiscordService(agentService, registry);
   discordService.start();
 }
@@ -179,14 +232,18 @@ if (discordEnabled && process.env.DISCORD_BOT_TOKEN) {
 let telegramService: TelegramService | null = null;
 
 const telegramEnabled = getConfigBool('telegram.enabled', config.telegram.enabled);
-if (telegramEnabled && process.env.TELEGRAM_BOT_TOKEN) {
+if (telegramEnabled && hasBotToken('telegram')) {
   telegramService = new TelegramService(agentService, registry, voiceService);
   telegramService.start();
 }
 
-// Initialize orchestrator
+// Initialize orchestrator (start gated by config — autonomous wakes stay off when disabled)
 const orchestrator = new Orchestrator(agentService, pushService);
-orchestrator.start();
+if (config.orchestrator.enabled) {
+  orchestrator.start();
+} else {
+  console.log('[Orchestrator] Disabled via config.orchestrator.enabled — autonomous wakes off');
+}
 
 // Make orchestrator, agent, voice, push, and discord services available to route handlers
 app.locals.orchestrator = orchestrator;
@@ -209,11 +266,39 @@ initCcRoutes().then(() => {
   if (config.command_center.enabled) console.log('Command Center routes mounted at /api/cc');
 });
 
+// Start the House Outlook poller — assembles the felt-state board on a rhythm
+// from the live sources, caches it, and serves it at /api/outlook. Per-source
+// isolated and self-rescheduling; a poll fault logs and never crashes the
+// process. (timer.unref'd so it never holds the event loop open on its own.)
+// The agent/orchestrator singletons are injected so houseSystems can read OUR
+// vitals (MCP + organs); both degrade to empties if unwired.
+startOutlookPoller({ agent: agentService, orchestrator });
+
+// Start the House Outlook AUTHOR — the slow (3h) Sonnet-4.6 pass on the user's
+// subscription where the companion authors its own hearth + the topics "we've been
+// circling". Its OWN lifecycle, NOT coupled to the logistics poller's tick;
+// errors back off (15m) and never crash the process (timer .unref'd). The
+// poller folds the authored output (presence/topics/needsYou) into the snapshot.
+startOutlookAuthor();
+
+// Start the Daily Handoff schedule — a 12:10am croner that, when enabled, runs a
+// Sonnet-4.6 subagent (the user's subscription, same guarded path as the outlook
+// author) to carry yesterday's daily forward into today's. OFF BY DEFAULT (gated
+// on handoff.enabled); the cron fires but no-ops when disabled. Faults are caught
+// + logged and never crash the process.
+startHandoffSchedule();
+
 // Start server
 server.listen(PORT, HOST, () => {
   console.log(`Server running at http://${HOST}:${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`Auth enabled: ${config.auth.password ? 'yes' : 'no'}`);
+  // Boot diagnostic for the internal token (gates loopback /mcp/* and
+  // /api/internal/*). DO NOT print the raw value: stdout flows to
+  // data/logs/pm2-out.log, which the auth-gated Settings → Logs viewer can read.
+  // The full token is read out-of-band by callers (.mcp.json headers, res CLI,
+  // ~/.claude.json) directly from its source below. Fingerprint only here.
+  console.log(`Internal token loaded (${internalTokenFingerprint()}) — full value at: ${internalTokenSource()}`);
   console.log(`Companion: ${config.identity.companion_name} | User: ${config.identity.user_name}`);
 });
 
@@ -221,6 +306,9 @@ server.listen(PORT, HOST, () => {
 process.on('SIGTERM', async () => {
   console.log('SIGTERM received, shutting down gracefully...');
   orchestrator.stop();
+  stopOutlookPoller();
+  stopOutlookAuthor();
+  stopHandoffSchedule();
   if (discordService) await discordService.stop();
   if (telegramService) await telegramService.stop();
   wss.clients.forEach(ws => ws.close());
@@ -235,6 +323,9 @@ process.on('SIGTERM', async () => {
 process.on('SIGINT', async () => {
   console.log('SIGINT received, shutting down gracefully...');
   orchestrator.stop();
+  stopOutlookPoller();
+  stopOutlookAuthor();
+  stopHandoffSchedule();
   if (discordService) await discordService.stop();
   if (telegramService) await telegramService.stop();
   wss.clients.forEach(ws => ws.close());

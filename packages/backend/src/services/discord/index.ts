@@ -18,6 +18,7 @@ import { splitResponse, formatChannelHistory, getDiscordThreadId } from './utils
 import type { MessageBatch } from './types.js';
 import type { AgentService } from '../agent.js';
 import { createMessage, createThread, getThread, getMostRecentActiveThread, updateThreadActivity } from '../db.js';
+import { getBotToken } from '../bot-token.js';
 import { getResonantConfig } from '../../config.js';
 import type { registry as registryInstance } from '../ws.js';
 
@@ -373,9 +374,9 @@ export class DiscordService {
   }
 
   async start(): Promise<void> {
-    const token = process.env.DISCORD_BOT_TOKEN;
+    const token = getBotToken('discord');
     if (!token) {
-      console.error('[Discord] DISCORD_BOT_TOKEN not set — gateway disabled');
+      console.error('[Discord] no token in DB or env — gateway disabled');
       return;
     }
 

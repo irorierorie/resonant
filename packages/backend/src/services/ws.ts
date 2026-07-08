@@ -1,6 +1,5 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { IncomingMessage, Server as HTTPServer } from 'http';
-import type { Socket } from 'net';
 import { parse as parseCookie } from 'cookie';
 import crypto from 'crypto';
 import type {
@@ -21,6 +20,7 @@ import {
   createThread,
   updateThreadActivity,
   getTodayThread,
+  getCurrentDailyThread,
   createCanvas,
   getCanvas,
   listCanvases,
@@ -31,10 +31,10 @@ import {
   removeReaction,
   pinThread,
   unpinThread,
+  threadToSummary,
 } from './db.js';
-import { AgentService } from './agent.js';
+import { AgentService, getActiveMessageId } from './agent.js';
 import { Orchestrator } from './orchestrator.js';
-import { getFile } from './files.js';
 import type { VoiceService } from './voice.js';
 import type { DiscordService } from './discord/index.js';
 import type { TelegramService } from './telegram/index.js';
@@ -201,15 +201,7 @@ class ConnectionRegistry {
 export const registry = new ConnectionRegistry();
 
 function threadsToSummaries(threads: Thread[]): ThreadSummary[] {
-  return threads.map(t => ({
-    id: t.id,
-    name: t.name,
-    type: t.type,
-    unread_count: t.unread_count,
-    last_activity_at: t.last_activity_at,
-    last_message_preview: null, // TODO: fetch last message content
-    pinned_at: t.pinned_at ?? null,
-  }));
+  return threads.map(threadToSummary);
 }
 
 function sendError(ws: WebSocket, code: string, message: string): void {
@@ -237,33 +229,38 @@ export function setGatewayServices(services: GatewayServices): void {
 export function createWebSocketServer(server: HTTPServer, agentService?: AgentService, orchestrator?: Orchestrator): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true });
   const agent = agentService ?? new AgentService();
-  const config = getResonantConfig();
-  const appPassword = config.auth.password;
 
   // Handle upgrade
   server.on('upgrade', (request: IncomingMessage, socket, head) => {
     const origin = request.headers.origin;
     const allowedOrigins = getAllowedOrigins();
 
-    // Allow localhost connections without origin (CLI tools, internal)
-    const remoteAddr = (socket as Socket).remoteAddress || '';
-    const isLocalhost = remoteAddr === '127.0.0.1' || remoteAddr === '::1' || remoteAddr === '::ffff:127.0.0.1';
-
-    // Validate origin — require valid origin for non-localhost connections
-    if (!isLocalhost) {
-      if (!origin || !allowedOrigins.includes(origin)) {
-        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
-        socket.destroy();
-        return;
-      }
-    } else if (origin && !allowedOrigins.includes(origin)) {
+    // Origin check — every connection must carry an allowed origin. (No loopback
+    // origin-exemption: behind cloudflared, public WS upgrades arrive FROM
+    // loopback, so a source-IP exemption is a bypass. The browser sends a real
+    // Origin; reject anything not on the allowlist regardless of source IP.)
+    if (!origin || !allowedOrigins.includes(origin)) {
       socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
       socket.destroy();
       return;
     }
 
-    // Validate session if password is set
-    if (appPassword) {
+    // Session check — required UNCONDITIONALLY (not gated on a password being
+    // set). Mirrors the HTTP authMiddleware fail-closed posture: read the
+    // password + AUTH_DEV_OPEN fresh each upgrade (config is loaded once, but
+    // env is read live) so an un-configured app cannot be reached over WS.
+    const appPassword = getResonantConfig().auth.password;
+    const devOpen = process.env.AUTH_DEV_OPEN === 'true';
+
+    if (!appPassword) {
+      // FAIL CLOSED: no password → no valid session can exist → reject, unless
+      // the explicit local-dev escape hatch is on.
+      if (!devOpen) {
+        socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+    } else {
       const cookieHeader = request.headers.cookie;
       if (!cookieHeader) {
         socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
@@ -311,9 +308,10 @@ export function createWebSocketServer(server: HTTPServer, agentService?: AgentSe
 
     registry.add(extWs.userId, extWs);
 
-    // Send connected message with thread list and status
+    // Send connected message with thread list and status.
+    // Ensure today's daily thread exists so the Daily tab always resolves.
+    const today = getCurrentDailyThread();
     const threads = listThreads({ includeArchived: false });
-    const today = getTodayThread();
 
     const connectedMsg: ServerMessage = {
       type: 'connected',
@@ -413,7 +411,7 @@ export function createWebSocketServer(server: HTTPServer, agentService?: AgentSe
           case 'voice_stop':
             registry.touchUserActivity();
             registry.touchUserWebActivity();
-            handleVoiceStop(extWs);
+            await handleVoiceStop(extWs, agent);
             break;
           case 'voice_mode':
             handleVoiceMode(extWs, clientMsg);
@@ -575,24 +573,38 @@ async function handleMessageSend(
   if (msg.threadId) {
     thread = getThread(msg.threadId);
   } else {
-    thread = getTodayThread();
-    if (!thread) {
-      const dayName = new Date().toLocaleDateString('en-GB', {
-        weekday: 'long', month: 'short', day: 'numeric',
-      });
-      thread = createThread({
-        id: crypto.randomUUID(),
-        name: dayName,
-        type: 'daily',
-        createdAt: now,
-        sessionType: 'v2',
-      });
-    }
+    // No explicit thread → today's deterministic daily thread (get-or-create).
+    thread = getCurrentDailyThread();
   }
 
   if (!thread) {
     sendError(ws, 'thread_not_found', 'Thread not found');
     return;
+  }
+
+  // Normalize any attachments into a stable on-message shape BEFORE persisting.
+  // The frontend bubble reads `message.metadata.attachments` to render
+  // thumbnails / audio players / file chips, so the persisted user message must
+  // carry the attachment array in a predictable form that survives reload (it is
+  // stored in the message's metadata JSON column and replayed by
+  // GET /api/threads/:id/messages). We keep all other metadata (e.g. prosody) intact.
+  const rawAttachments = (msg.metadata as any)?.attachments as Array<{
+    fileId: string; filename?: string; mimeType?: string; size?: number;
+    url?: string; contentType?: string;
+  }> | undefined;
+
+  let persistMetadata: Record<string, unknown> | undefined = msg.metadata;
+  if (rawAttachments && rawAttachments.length > 0) {
+    const normalizedAttachments = rawAttachments.map(a => ({
+      fileId: a.fileId,
+      filename: a.filename ?? '',
+      // contentType is the render kind the bubble switches on: image | audio | file
+      contentType: (a.contentType as 'image' | 'audio' | 'file') ?? 'file',
+      url: a.url ?? `/api/files/${a.fileId}`,
+      ...(a.mimeType ? { mimeType: a.mimeType } : {}),
+      ...(typeof a.size === 'number' ? { size: a.size } : {}),
+    }));
+    persistMetadata = { ...(msg.metadata as Record<string, unknown>), attachments: normalizedAttachments };
   }
 
   // Store user's message
@@ -602,7 +614,7 @@ async function handleMessageSend(
     role: 'user',
     content: msg.content,
     contentType: msg.contentType || 'text',
-    metadata: msg.metadata,
+    metadata: persistMetadata,
     replyToId: msg.replyToId,
     createdAt: now,
   });
@@ -620,75 +632,58 @@ async function handleMessageSend(
   // Build agent prompt
   let agentPrompt = msg.content;
 
+  // Attachments to surface to the model via a filepath note (+ Read tool),
+  // resolved from uploaded fileIds inside the agent. Populated in the attachment
+  // branches below; passed to processMessage which folds the path note into the
+  // agent prompt. contentType rides along so the note labels image/audio/file.
+  const agentImages: Array<{ fileId: string; filename?: string; contentType?: 'image' | 'audio' | 'file' }> = [];
+
   // Check for batched attachments (multiple files sent together)
   const batchAttachments = (msg.metadata as any)?.attachments as Array<{
     fileId: string; filename: string; mimeType: string; size: number;
-    url: string; contentType: string;
+    url: string; contentType: 'image' | 'audio' | 'file';
   }> | undefined;
 
-  if (batchAttachments && batchAttachments.length > 0) {
-    // Store each file as its own message in DB so the UI renders them individually
-    for (const att of batchAttachments) {
-      const fileMsg = createMessage({
-        id: crypto.randomUUID(),
-        threadId: thread.id,
-        role: 'user',
-        content: att.url,
-        contentType: att.contentType as 'image' | 'audio' | 'file',
-        metadata: { fileId: att.fileId, filename: att.filename, size: att.size, mimeType: att.mimeType },
-        createdAt: now,
-      });
-      registry.broadcast({ type: 'message', message: fileMsg });
+  // Voice messages carry their recorded audio as an attachment for inline
+  // playback, but the agent prompt must stay the spoken transcript (+prosody) —
+  // NOT be rewritten into "X sent an audio file" framing. Detect and skip the
+  // file-prompt rebuild for voice; the attachment is still persisted above.
+  const isVoiceMessage = (msg.metadata as any)?.source === 'voice';
+
+  if (batchAttachments && batchAttachments.length > 0 && !isVoiceMessage) {
+    // NOTE: attachments are persisted on the parent user message's
+    // metadata.attachments (normalized above) — the bubble renders them inline
+    // from there. We deliberately do NOT create separate per-file messages
+    // (that would double-render once the bubble reads metadata.attachments).
+
+    // ALL attachment kinds (image / audio / file) are surfaced to the model the
+    // same way: a filepath note injected into the agent prompt by
+    // buildAttachmentNote (see agent.ts), pointing at each file's absolute
+    // on-disk path with an instruction to Read it. We just collect the fileIds +
+    // their kind here; the agent resolves the real paths and builds the note.
+    for (const a of batchAttachments) {
+      agentImages.push({ fileId: a.fileId, filename: a.filename, contentType: a.contentType });
     }
 
-    // Build ONE combined agent prompt for all files
-    const images = batchAttachments.filter(a => a.contentType === 'image');
-    const others = batchAttachments.filter(a => a.contentType !== 'image');
-    const promptParts: string[] = [];
-
-    if (images.length === 1) {
-      const info = getFile(images[0].fileId);
-      promptParts.push(`${config.identity.user_name} sent an image (${images[0].filename}).${info ? ` You can view it at: ${info.path}` : ''}`);
-    } else if (images.length > 1) {
-      const lines = images.map((a, i) => {
-        const info = getFile(a.fileId);
-        return `${i + 1}. ${a.filename}${info ? ` — ${info.path}` : ''}`;
-      });
-      promptParts.push(`${config.identity.user_name} sent ${images.length} images:\n${lines.join('\n')}`);
-    }
-
-    for (const a of others) {
-      const info = getFile(a.fileId);
-      const sizeStr = a.size ? ` (${Math.round(a.size / 1024)}KB)` : '';
-      promptParts.push(`${config.identity.user_name} sent a ${a.contentType}: ${a.filename}${sizeStr}${info ? ` — ${info.path}` : ''}`);
-    }
-
-    if (msg.content?.trim()) {
-      promptParts.push(`\nTheir message: ${msg.content.trim()}`);
-    }
-
-    agentPrompt = promptParts.join('\n');
+    // The agent prompt itself is just the user's typed message (or empty). The path
+    // note is appended downstream — keeping it out of agentPrompt means it never
+    // leaks into the persisted/displayed user message.
+    agentPrompt = msg.content?.trim() ?? '';
   } else {
-    // Single message (no batch) — handle non-text content types
+    // Single message (no batch) — handle non-text content types. Like the batch
+    // path, image / audio / file all flow through the same filepath note: we push
+    // the fileId + kind into agentImages and let buildAttachmentNote (agent.ts)
+    // resolve the absolute path and tell the agent to Read it. agentPrompt stays
+    // the user's typed message (or empty) so the path note never leaks into their bubble.
     const ct = msg.contentType || 'text';
     if (ct !== 'text' && msg.metadata) {
       const meta = msg.metadata as Record<string, unknown>;
       const fileId = meta.fileId as string | undefined;
       const filename = meta.filename as string | undefined;
-      const size = meta.size as number | undefined;
 
-      let diskPath = '';
-      if (fileId) {
-        const fileInfo = getFile(fileId);
-        if (fileInfo) diskPath = fileInfo.path;
-      }
-
-      if (ct === 'image') {
-        agentPrompt = `${config.identity.user_name} sent an image${filename ? ` (${filename})` : ''}.${diskPath ? ` You can view it at: ${diskPath}` : ''}`;
-      } else if (ct === 'audio') {
-        agentPrompt = `${config.identity.user_name} sent an audio message${filename ? ` (${filename})` : ''}.${diskPath ? ` File path: ${diskPath}` : ''}`;
-      } else if (ct === 'file') {
-        agentPrompt = `${config.identity.user_name} sent a file: ${filename || 'unknown'}${size ? ` (${Math.round(size / 1024)}KB)` : ''}.${diskPath ? ` File path: ${diskPath}` : ''}`;
+      if (fileId && (ct === 'image' || ct === 'audio' || ct === 'file')) {
+        agentImages.push({ fileId, filename, contentType: ct });
+        agentPrompt = msg.content?.trim() ?? '';
       }
     }
   }
@@ -706,7 +701,12 @@ async function handleMessageSend(
 
   // Process through agent — agent service handles streaming, DB storage, and broadcasting
   try {
-    const agentResponse = await agentService.processMessage(thread.id, agentPrompt, { name: thread.name, type: thread.type });
+    const agentResponse = await agentService.processMessage(
+      thread.id,
+      agentPrompt,
+      { name: thread.name, type: thread.type },
+      agentImages.length > 0 ? { images: agentImages } : undefined,
+    );
     updateThreadActivity(thread.id, new Date().toISOString(), true);
 
     // Auto-TTS: stream voice to any user connection with voice mode enabled
@@ -788,7 +788,7 @@ function handleCreateThread(
   msg: Extract<ClientMessage, { type: 'create_thread' }>
 ): void {
   const thread = createThread({
-    id: crypto.randomUUID(),
+    // No id → createThread derives `slug(name)-shortId()` (unique, readable).
     name: msg.name,
     type: 'named',
     createdAt: new Date().toISOString(),
@@ -864,7 +864,7 @@ function handleVoiceAudio(
   ws.audioChunks.push(chunk);
 }
 
-async function handleVoiceStop(ws: ExtendedWebSocket): Promise<void> {
+async function handleVoiceStop(ws: ExtendedWebSocket, agentService: AgentService): Promise<void> {
   ws.isRecording = false;
 
   if (ws.audioChunks.length === 0) {
@@ -939,6 +939,23 @@ async function handleVoiceStop(ws: ExtendedWebSocket): Promise<void> {
       ...(prosody && { prosody }),
     };
     ws.send(JSON.stringify(completeMsg));
+
+    // Route the transcript into the agent as a normal user message.
+    // Reuses handleMessageSend so the transcript is stored, broadcast, and
+    // (in voice mode) auto-TTS'd back — identical to a typed message.
+    // Prosody rides in metadata so the voice-tone prepend in handleMessageSend fires.
+    // the user's voice is STT-only by design — the recording is NOT embedded as audio.
+    const voiceMetadata: Record<string, unknown> = { source: 'voice' };
+    if (prosody) voiceMetadata.prosody = prosody;
+
+    const voiceMessage: Extract<ClientMessage, { type: 'message' }> = {
+      type: 'message',
+      threadId: '', // empty → handleMessageSend resolves today's thread
+      content: transcript,
+      contentType: 'text',
+      metadata: voiceMetadata,
+    };
+    await handleMessageSend(voiceMessage, ws, agentService);
   } catch (error) {
     console.error('[Voice] Transcription error:', error);
     const errorMsg: ServerMessage = {
@@ -971,9 +988,11 @@ function handleCanvasCreate(
   ws: ExtendedWebSocket
 ): void {
   const now = new Date().toISOString();
+  const messageId = msg.threadId ? getActiveMessageId(msg.threadId) : null;
   const canvas = createCanvas({
     id: crypto.randomUUID(),
     threadId: msg.threadId || undefined,
+    messageId,
     title: msg.title,
     contentType: msg.contentType || 'markdown',
     language: msg.language || undefined,
@@ -1088,15 +1107,7 @@ function handlePinThread(
   if (thread) {
     registry.broadcast({
       type: 'thread_updated',
-      thread: {
-        id: thread.id,
-        name: thread.name,
-        type: thread.type,
-        unread_count: thread.unread_count,
-        last_activity_at: thread.last_activity_at,
-        last_message_preview: null,
-        pinned_at: thread.pinned_at,
-      },
+      thread: threadToSummary(thread),
     });
   }
 }
@@ -1109,15 +1120,7 @@ function handleUnpinThread(
   if (thread) {
     registry.broadcast({
       type: 'thread_updated',
-      thread: {
-        id: thread.id,
-        name: thread.name,
-        type: thread.type,
-        unread_count: thread.unread_count,
-        last_activity_at: thread.last_activity_at,
-        last_message_preview: null,
-        pinned_at: null,
-      },
+      thread: threadToSummary(thread),
     });
   }
 }

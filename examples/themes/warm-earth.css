@@ -28,13 +28,6 @@
   --user-border: #2a3020;
   --user-accent: #90a870;
 
-  --simon-bg: var(--companion-bg);
-  --simon-border: var(--companion-border);
-  --simon-accent: var(--companion-accent);
-  --mary-bg: var(--user-bg);
-  --mary-border: var(--user-border);
-  --mary-accent: var(--user-accent);
-
   --status-active: #c89040;
   --status-waking: #a07030;
   --status-dormant: #5a5040;

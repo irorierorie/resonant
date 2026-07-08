@@ -1,19 +1,17 @@
 {
   "name": "resonant",
-  "version": "2.3.0",
+  "version": "0.1.0",
   "private": true,
-  "description": "Relational AI companion framework built on Claude Code Agent SDK",
+  "description": "A local-first, self-hosted AI companion built on the Claude Agent SDK.",
   "workspaces": [
     "packages/shared",
     "packages/backend",
     "packages/frontend"
   ],
   "scripts": {
-    "setup": "node scripts/setup.mjs",
     "dev": "npm run dev --workspace=packages/backend",
-    "dev:frontend": "npm run dev --workspace=packages/frontend",
-    "dev:all": "concurrently \"npm run dev\" \"npm run dev:frontend\"",
-    "build": "npm run build --workspace=packages/shared && npm run build --workspace=packages/frontend && npm run build --workspace=packages/backend",
+    "build": "node scripts/build.mjs",
+    "build:stamp": "node scripts/write-build-id.mjs",
     "start": "npm run start --workspace=packages/backend",
     "check": "npm run check --workspaces --if-present",
     "test": "vitest run"

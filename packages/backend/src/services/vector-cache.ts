@@ -19,11 +19,33 @@ interface CacheEntry {
   createdAt: string;
 }
 
-// Parallel arrays: metadata[i] corresponds to vectors at offset i * EMBEDDING_DIM
+// Parallel arrays: metadata[i] corresponds to vectors at offset i * EMBEDDING_DIM.
+// `metadata.length` is the LOGICAL count; `vectors` is an amortized-growth
+// buffer whose capacity (vectors.length / EMBEDDING_DIM) may exceed it. Slots
+// past metadata.length are dead space — never read, never searched.
 let metadata: CacheEntry[] = [];
 let vectors: Float32Array = new Float32Array(0);
 let messageIndex: Map<string, number> = new Map(); // messageId → index
 let loaded = false;
+
+// Amortized growth (audit win #2, 2026-07-03): the old code reallocated and
+// memcpy'd the ENTIRE corpus (~42 MB at 27.6k vectors) on EVERY new message —
+// ~84 MB of allocation churn per conversational turn, scaling linearly with
+// the corpus. Growing capacity geometrically makes inserts amortized O(1):
+// ~log₁.₅(n) total copies instead of one per message.
+const GROWTH_FACTOR = 1.5;
+const MIN_GROW_CAPACITY = 1024;
+
+/** Grow `vectors` so it can hold at least `needed` entries. Copies only the
+ *  LIVE region (metadata.length entries), at most ~log(n) times ever. */
+function ensureCapacity(needed: number): void {
+  const capacity = vectors.length / EMBEDDING_DIM;
+  if (needed <= capacity) return;
+  const newCapacity = Math.max(needed, MIN_GROW_CAPACITY, Math.ceil(capacity * GROWTH_FACTOR));
+  const grown = new Float32Array(newCapacity * EMBEDDING_DIM);
+  grown.set(vectors.subarray(0, metadata.length * EMBEDDING_DIM));
+  vectors = grown;
+}
 
 /** Load all embeddings from DB into memory. Call once at startup. */
 export function loadVectorCache(): void {
@@ -77,13 +99,35 @@ export function cacheEmbedding(messageId: string, vector: Float32Array, meta: {
   }
 
   const oldLen = metadata.length;
-  const newVectors = new Float32Array((oldLen + 1) * EMBEDDING_DIM);
-  newVectors.set(vectors);
-  newVectors.set(vector, oldLen * EMBEDDING_DIM);
-  vectors = newVectors;
-
+  ensureCapacity(oldLen + 1);
+  vectors.set(vector, oldLen * EMBEDDING_DIM);
   metadata.push({ messageId, ...meta });
   messageIndex.set(messageId, oldLen);
+}
+
+/**
+ * Evict a single embedding from the cache (audit win #5, 2026-07-03). Called
+ * from the delete paths (regenerate, thread delete, soft delete) so search
+ * never surfaces a messageId whose message no longer exists, and orphan
+ * vectors stop accumulating in RAM across a long uptime.
+ *
+ * Swap-remove: the last entry moves into the freed slot — O(1), no buffer
+ * reallocation, and the live region stays contiguous for the search scan.
+ * Unknown ids are a no-op.
+ */
+export function removeEmbedding(messageId: string): void {
+  if (!loaded) return;
+  const idx = messageIndex.get(messageId);
+  if (idx === undefined) return;
+
+  const last = metadata.length - 1;
+  if (idx !== last) {
+    vectors.copyWithin(idx * EMBEDDING_DIM, last * EMBEDDING_DIM, (last + 1) * EMBEDDING_DIM);
+    metadata[idx] = metadata[last];
+    messageIndex.set(metadata[idx].messageId, idx);
+  }
+  metadata.pop();
+  messageIndex.delete(messageId);
 }
 
 export interface SearchFilter {

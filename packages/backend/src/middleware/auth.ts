@@ -15,10 +15,25 @@ export function getCookieName(): string {
   return COOKIE_NAME;
 }
 
+/** Explicit, dangerous, OFF-by-default local-dev escape hatch. When
+ *  AUTH_DEV_OPEN=true AND no password is configured, protected routes pass
+ *  through without a session. NEVER set this when the app is publicly reachable
+ *  (e.g. behind the cloudflared tunnel) — it disables auth entirely. */
+function devOpen(): boolean {
+  return process.env.AUTH_DEV_OPEN === 'true';
+}
+
 export function authMiddleware(req: Request, res: Response, next: NextFunction): void {
   const config = getResonantConfig();
   if (!config.auth.password) {
-    next();
+    // FAIL CLOSED: an unset password must NOT mean "open". Without a configured
+    // password there is no way to mint a valid session, so protected routes are
+    // sealed (401) unless the explicit local-dev escape hatch is on.
+    if (devOpen()) {
+      next();
+      return;
+    }
+    res.status(503).json({ error: 'Auth not configured — set APP_PASSWORD' });
     return;
   }
 
@@ -119,7 +134,15 @@ export function sessionCheckHandler(req: Request, res: Response): void {
   const config = getResonantConfig();
   const authRequired = !!config.auth.password;
   if (!authRequired) {
-    res.json({ authenticated: true, auth_required: false });
+    // No password configured. In dev-open mode the app is intentionally open
+    // (auth_required:false). Otherwise we are FAIL-CLOSED: report that auth is
+    // required but unconfigured so the UI can show "set APP_PASSWORD" rather
+    // than falsely claiming the user is authenticated.
+    if (devOpen()) {
+      res.json({ authenticated: true, auth_required: false });
+      return;
+    }
+    res.json({ authenticated: false, auth_required: true, auth_unconfigured: true });
     return;
   }
 

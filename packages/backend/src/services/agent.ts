@@ -1,8 +1,9 @@
 import { query, AbortError, listSessions, type Options, type Query, type McpServerConfig, type ListSessionsOptions } from '@anthropic-ai/claude-agent-sdk';
-import type { McpServerInfo } from '@resonant/shared';
-import { createMessage, updateThreadSession, getThread, updateThreadActivity, createSessionRecord, endSessionRecord } from './db.js';
+import type { McpServerInfo, EffortLevel } from '@resonant/shared';
+import { getFile } from './files.js';
+import { createMessage, updateThreadSession, getThread, updateThreadActivity, createSessionRecord, endSessionRecord, setConfig, getConfig } from './db.js';
 import { registry } from './ws.js';
-import { createHooks, buildOrientationContext, type HookContext, type ToolInsertion } from './hooks.js';
+import { createHooks, buildOrientationContext, prefetchMindContext, maybeSnapshotTone, type HookContext, type ToolInsertion } from './hooks.js';
 import type { MessageSegment } from '@resonant/shared';
 import type { PushService } from './push.js';
 import { getResonantConfig } from '../config.js';
@@ -11,14 +12,57 @@ import { describeIdentitySource, renderIdentityPrompt } from '../identity/render
 import { applyAuthToEnv, effectiveModel, getAuthPreferences } from './auth-preferences.js';
 import { recordUsage } from './usage-log.js';
 import crypto from 'crypto';
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, statSync } from 'fs';
 import { join, dirname } from 'path';
+import type { ResonantConfig } from '../config.js';
 
 // Lazy-init: config isn't available at import time — defer until first use
 let _initialized = false;
 let claudeMdContent = '';
+/** mtime fingerprint of every identity source candidate at the last load. */
+let identitySourceStamp = '';
+let SYSTEM_PROMPT_FILE = '';
 let AGENT_CWD = '';
 const mcpServersFromConfig: Record<string, McpServerConfig> = {};
+
+/** Fingerprint every file the identity CAN come from (profile yaml, companion
+ *  md, legacy CLAUDE.md candidates). Existence changes matter too — a source
+ *  appearing/disappearing changes which one wins — so absent files stamp as
+ *  'absent' rather than being skipped. */
+function stampIdentitySources(config: ResonantConfig): string {
+  const candidates = [
+    config.identity.profile_path,
+    config.identity.companion_md_path,
+    config.agent.claude_md_path,
+    join(config.agent.cwd, '.claude/CLAUDE.md'),
+    join(config.agent.cwd, 'CLAUDE.md'),
+  ];
+  return candidates
+    .map((p) => {
+      try { return `${p}:${statSync(p).mtimeMs}`; } catch { return `${p}:absent`; }
+    })
+    .join('|');
+}
+
+/** (Re)load the companion identity when any source file changed since the last
+ *  load. Called once from ensureInit and again per query — the per-query cost
+ *  is a handful of statSync calls when nothing moved (the frame file at
+ *  system_prompt_file already gets this live-edit treatment; CLAUDE.md/profile
+ *  edits used to require a restart). Failure-tolerant: a stat/read/render
+ *  error keeps the last good copy instead of blanking the identity mid-flight. */
+function refreshCompanionIdentity(): void {
+  try {
+    const config = getResonantConfig();
+    const stamp = stampIdentitySources(config);
+    if (stamp === identitySourceStamp) return;
+    const identity = loadCompanionIdentity(config);
+    claudeMdContent = renderIdentityPrompt(identity);
+    identitySourceStamp = stamp;
+    console.log(`Loaded companion identity from ${describeIdentitySource(identity)} (${claudeMdContent.length} chars)`);
+  } catch (err) {
+    console.warn('[agent] identity refresh failed — keeping last good copy:', (err as Error).message);
+  }
+}
 
 function ensureInit() {
   if (_initialized) return;
@@ -26,9 +70,15 @@ function ensureInit() {
   const config = getResonantConfig();
   AGENT_CWD = config.agent.cwd;
 
-  const identity = loadCompanionIdentity(config);
-  claudeMdContent = renderIdentityPrompt(identity);
-  console.log(`Loaded companion identity from ${describeIdentitySource(identity)} (${claudeMdContent.length} chars)`);
+  refreshCompanionIdentity();
+
+  // Optional lean operating frame. When set, frame + CLAUDE.md become the whole
+  // system prompt (the claude_code preset is dropped). Read fresh per query so
+  // Settings edits apply without a restart.
+  SYSTEM_PROMPT_FILE = config.agent.system_prompt_file || '';
+  if (SYSTEM_PROMPT_FILE && existsSync(SYSTEM_PROMPT_FILE)) {
+    console.log(`System-prompt frame active: ${SYSTEM_PROMPT_FILE} (claude_code preset replaced)`);
+  }
 
   // Load .mcp.json
   const mcpJsonPath = config.agent.mcp_json_path;
@@ -176,6 +226,71 @@ interface ThinkingInsertion {
   summary: string;
 }
 
+// ─── Attachment delivery to the in-process query() ───────────────────────────
+// Attachments reach the model as a FILEPATH note injected into the agent's
+// prompt, NOT as base64 image blocks. Two reasons (both sound):
+//   1. base64 inflates ~33% — a 1.4MB photo becomes ~1.9MB of injected text per
+//      image, heavy enough to choke delivery.
+//   2. a filepath + the Read tool is universal — it covers images, arbitrary
+//      files (PDF/docs), AND audio, not just API-accepted image types, and it
+//      unifies with how generated voice .mp3s are already served by path.
+// The files live at PROJECT_ROOT/data/files/{uuid}.{ext}; getFile() returns the
+// absolute on-disk path WITH extension. AGENT_CWD is the companion's home dir, so the
+// path is out-of-tree — the ABSOLUTE path is essential. Reads are NOT gated (the
+// write-gate only blocks Write/Edit), so Read reaches the file. Read renders
+// images and reads text/PDF directly; for audio it's noted as an audio file.
+
+/** A pending attachment to surface to the model, identified by upload fileId. */
+export interface AgentImageInput {
+  fileId: string;
+  filename?: string;
+  /** Render/handling kind: image | audio | file. Defaults to file when absent. */
+  contentType?: 'image' | 'audio' | 'file';
+}
+
+/**
+ * Resolve uploaded attachment fileIds to a single system-aside note for the
+ * agent's prompt, pointing at each file's ABSOLUTE on-disk path and instructing
+ * the agent to use its Read tool. Best-effort: a fileId that can't be resolved
+ * off disk is skipped (never blocks the turn). Returns '' when nothing resolves.
+ */
+function buildAttachmentNote(attachments: AgentImageInput[] | undefined, userName: string): string {
+  if (!attachments || attachments.length === 0) return '';
+  const resolved: Array<{ filename: string; kind: 'image' | 'audio' | 'file'; path: string }> = [];
+  for (const att of attachments) {
+    try {
+      const info = getFile(att.fileId);
+      if (!info) continue;
+      const kind = att.contentType
+        ?? (info.mimeType.startsWith('image/') ? 'image'
+          : info.mimeType.startsWith('audio/') ? 'audio'
+          : 'file');
+      resolved.push({
+        filename: att.filename || info.filename,
+        kind,
+        path: info.path.replace(/\\/g, '/'),
+      });
+    } catch (err) {
+      console.warn(`[agent] buildAttachmentNote: failed to resolve ${att.fileId}:`, err);
+    }
+  }
+  if (resolved.length === 0) return '';
+
+  const noun = resolved.length === 1 ? 'file' : 'files';
+  const lines = resolved.map(r => {
+    const action = r.kind === 'audio'
+      ? `audio file at that path — Read it / transcribe as needed`
+      : `${r.kind} saved at ${r.path} — use your Read tool on that path to view it`;
+    return resolved.length === 1
+      ? `"${r.filename}" (${r.kind}) ${action}`
+      : `  - "${r.filename}" (${r.kind}) ${action}`;
+  });
+  const header = `${userName} attached ${resolved.length} ${noun}:`;
+  return resolved.length === 1
+    ? `\n\n[${header} ${lines[0]}]`
+    : `\n\n[${header}\n${lines.join('\n')}]`;
+}
+
 // Build interleaved text/tool/thinking segments from response text + insertions
 function buildSegments(fullResponse: string, toolInsertions: ToolInsertion[], thinkingBlocks: ThinkingInsertion[] = []): MessageSegment[] {
   if (toolInsertions.length === 0 && thinkingBlocks.length === 0) return [];
@@ -229,6 +344,18 @@ function buildSegments(fullResponse: string, toolInsertions: ToolInsertion[], th
 // Cached MCP server status (refreshed on each query)
 let cachedMcpStatus: McpServerInfo[] = [];
 
+// Active streaming message id per thread. Set when a turn's stream begins and
+// cleared when the turn ends, so out-of-band callers (the canvas REST route hit
+// by the `res canvas` organ mid-turn) can ask "what message is streaming in
+// thread X right now?" and link a created canvas back to that turn.
+const activeMessageByThread = new Map<string, string>();
+
+/** The id of the message currently streaming in `threadId`, or null if no turn
+ *  is active there (e.g. a canvas created outside a conversation). */
+export function getActiveMessageId(threadId: string): string | null {
+  return activeMessageByThread.get(threadId) ?? null;
+}
+
 export class AgentService {
   private pushService: PushService | null = null;
 
@@ -256,12 +383,26 @@ export class AgentService {
     return { tokensUsed: contextTokensUsed, contextWindow: contextWindowSize };
   }
 
+  /** The id of the message currently streaming in `threadId`, or null. */
+  getActiveMessageId(threadId: string): string | null {
+    return getActiveMessageId(threadId);
+  }
+
   stopGeneration(): boolean {
+    let stopped = false;
+    // query.interrupt() is what actually halts an in-flight streaming turn —
+    // the SDK keeps draining the current turn through a bare abortController.abort(),
+    // so the controller alone does NOT stop generation mid-stream. Call interrupt()
+    // first (best-effort), then abort the controller as a belt-and-suspenders.
+    if (activeQuery && typeof (activeQuery as { interrupt?: () => Promise<void> }).interrupt === 'function') {
+      Promise.resolve((activeQuery as { interrupt: () => Promise<void> }).interrupt()).catch(() => { /* best-effort */ });
+      stopped = true;
+    }
     if (activeAbortController) {
       activeAbortController.abort();
-      return true;
+      stopped = true;
     }
-    return false;
+    return stopped;
   }
 
   async reconnectMcpServer(name: string): Promise<{ success: boolean; error?: string }> {
@@ -329,6 +470,8 @@ export class AgentService {
   async processMessage(threadId: string, content: string, threadMeta?: { name: string; type: 'daily' | 'named' }, opts?: {
     platform?: 'web' | 'discord' | 'telegram' | 'api';
     platformContext?: string;
+    /** Uploaded attachments to surface to the model as a filepath note (+Read). */
+    images?: AgentImageInput[];
   }): Promise<string> {
     // Determine priority based on platform
     const platform = opts?.platform || 'web';
@@ -354,13 +497,13 @@ export class AgentService {
     });
   }
 
-  async processAutonomous(threadId: string, prompt: string): Promise<string> {
+  async processAutonomous(threadId: string, prompt: string, modelOverride?: string): Promise<string> {
     return queryQueue.enqueue(PRIORITIES.autonomous, async () => {
-      return this._processQuery(threadId, prompt, true);
+      return this._processQuery(threadId, prompt, true, undefined, undefined, modelOverride);
     });
   }
 
-  private async _processQuery(threadId: string, content: string, isAutonomous = false, threadMeta?: { name: string; type: 'daily' | 'named' }, platformOpts?: { platform?: 'web' | 'discord' | 'telegram' | 'api'; platformContext?: string }): Promise<string> {
+  private async _processQuery(threadId: string, content: string, isAutonomous = false, threadMeta?: { name: string; type: 'daily' | 'named' }, platformOpts?: { platform?: 'web' | 'discord' | 'telegram' | 'api'; platformContext?: string; images?: AgentImageInput[] }, modelOverride?: string): Promise<string> {
     ensureInit();
     const thread = getThread(threadId);
     if (!thread) throw new Error(`Thread ${threadId} not found`);
@@ -372,9 +515,50 @@ export class AgentService {
 
     // Response and tool tracking (declared early so hookContext can reference)
     let fullResponse = '';
+    let wasInterrupted = false;
     const toolInsertions: ToolInsertion[] = [];
     const thinkingBlocks: ThinkingInsertion[] = [];
     let currentThinkingAccum = '';
+    // Per-text-block state for streaming text_delta tokens. A turn may contain
+    // multiple text blocks (e.g. text -> tool -> text); each non-first block is
+    // joined to the prior accumulated text with a single '\n\n', inserted once
+    // right before that block's first delta.
+    let currentTextBlockStarted = false;
+    let currentTextBlockHasDelta = false;
+    // Structural dedup between the delta-stream and the assembled `assistant`
+    // message. Counts how many text blocks were actually delta-streamed this
+    // turn; the assistant handler skips by index rather than by string match
+    // (endsWith would double a block if the SDK post-normalizes text, and would
+    // swallow a legitimately-repeated block). Both live at _processQuery scope so
+    // they persist across ALL assistant messages in the turn (text -> tool -> text
+    // spans two assistant messages but one continuous stream) and reset to 0 on
+    // each new _processQuery invocation / on compaction.
+    let textBlocksStreamedViaDelta = 0;
+    let assistantTextBlockIndex = 0;
+    // Per-turn thinking-block counter. Drives a stable block id for live
+    // streaming (`${streamMsgId}-think-${seq}`). Lives at _processQuery scope
+    // like the text-block counters above so it spans all assistant messages in
+    // the turn; reset to 0 on compaction (see the compaction reset block).
+    let thinkingBlockSeq = 0;
+    // The current thinking block's stable id + interleave offset, captured at
+    // its content_block_start and reused for its deltas + stop.
+    let thinkingId = '';
+    let thinkingOffset = 0;
+
+    // MEASUREMENT HARNESS (temp): cadence logging gated behind MEASURE_THINKING=1.
+    // Grep prefix: [THINK-CADENCE]. Answers: do summarized thinking deltas stream
+    // incrementally (many small) or arrive in big chunks, and how do they interleave
+    // with text tokens and tool calls? Silent + zero-cost when the env is unset.
+    const MEASURE = process.env.MEASURE_THINKING === '1';
+    const mStart = Date.now();
+    const mt = (): string => `+${(Date.now() - mStart).toString().padStart(6)}ms`;
+    let mThinkDeltaCount = 0; // deltas in the current block
+    let mThinkBlockChars = 0; // chars in the current block
+    let mThinkDeltaTotal = 0; // deltas across all blocks
+    let mThinkCharsTotal = 0; // thinking chars across all blocks
+    let mThinkBlocks = 0; // completed thinking blocks
+    let mTokenCount = 0; // stream_token broadcasts
+    let mToolCount = 0; // tool_use sightings
 
     // Build hook context
     const platform = platformOpts?.platform || 'web';
@@ -405,32 +589,94 @@ export class AgentService {
     // Interactive queries use primary model (configurable)
     // User overrides from auth_preferences win over YAML defaults.
     const yamlInteractive = cfg.agent.model || process.env.AGENT_MODEL || 'claude-sonnet-4-6';
-    const model = isAutonomous
-      ? effectiveModel('autonomous', cfg.agent.model_autonomous)
-      : effectiveModel('interactive', yamlInteractive);
+    // Model precedence (interactive path):
+    //   1. explicit per-call modelOverride (scheduled-wake model) — wins verbatim
+    //   2. thread.model — per-thread picker, applies to the next message
+    //   3. effectiveModel('interactive', yaml) — config/YAML default
+    // Autonomous wakes keep their own two-tier path (override → model_autonomous)
+    // untouched; the per-thread model only steers the interactive surface.
+    const threadModel = (!isAutonomous && thread.model && thread.model.trim())
+      ? thread.model.trim()
+      : null;
+    const model = (modelOverride && modelOverride.trim())
+      ? modelOverride.trim()
+      : threadModel
+        ? threadModel
+        : isAutonomous
+          ? effectiveModel('autonomous', cfg.agent.model_autonomous)
+          : effectiveModel('interactive', yamlInteractive);
+    // Per-thread reasoning effort (interactive path only). Adaptive thinking is
+    // always on (set below); effort guides its depth. Invalid/null → omit so the
+    // SDK defaults to 'high'. Manual thinking budgets are deprecated — not used.
+    const VALID_EFFORT = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+    const threadEffort = (!isAutonomous && thread.effort &&
+      (VALID_EFFORT as readonly string[]).includes(thread.effort))
+      ? (thread.effort as EffortLevel)
+      : undefined;
+    // System prompt. When a system_prompt_file is configured, the lean frame +
+    // CLAUDE.md REPLACE the claude_code preset entirely (no generic harness on
+    // top — the real register fix). Read fresh so Settings edits apply live.
+    // Falls back to preset + CLAUDE.md append when no frame file is set.
+    // The identity half gets the same live-edit treatment: re-read when its
+    // source files' mtimes changed (was memoized forever at first init).
+    refreshCompanionIdentity();
+    const frame = SYSTEM_PROMPT_FILE && existsSync(SYSTEM_PROMPT_FILE)
+      ? readFileSync(SYSTEM_PROMPT_FILE, 'utf-8').trim()
+      : '';
+    // Runtime self-knowledge: the claude_code preset normally tells the model
+    // which model it is. Replacing the preset (the register fix) dropped that, so
+    // the companion could only guess its version. Re-inject the RESOLVED model (per-thread
+    // aware) on the frame path so he can state it as fact. The preset path still
+    // carries it natively, so only the frame branch needs the note.
+    const runtimeNote = `\n\n[Runtime] Model serving this turn: ${model}. This line is injected by the home and is the ground truth for "what model are you on?" — state it directly; don't second-guess your own version.`;
+    const systemPrompt: Options['systemPrompt'] = frame
+      ? `${claudeMdContent ? `${frame}\n\n${claudeMdContent}` : frame}${runtimeNote}`
+      : (claudeMdContent
+          ? { type: 'preset', preset: 'claude_code', append: claudeMdContent }
+          : { type: 'preset', preset: 'claude_code' });
+
     const options: Options = {
       model,
-      systemPrompt: claudeMdContent
-        ? { type: 'preset', preset: 'claude_code', append: claudeMdContent }
-        : { type: 'preset', preset: 'claude_code' },
+      systemPrompt,
       cwd: AGENT_CWD,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       maxTurns: 30,
 
       includePartialMessages: true,
-      thinking: { type: 'adaptive' },
+      // Thinking display is driven by the PER-THREAD setting (thread.show_thinking).
+      //   show_thinking === true  → 'summarized': reasoning blocks are non-empty
+      //     and stream into the collapsible thinking pill in the UI.
+      //   show_thinking === false → display omitted: empty thinking blocks, no
+      //     events — the quietest path.
+      // (MEASURE_THINKING is retained below ONLY for [THINK-CADENCE] stdout
+      // logging; it no longer decides display.)
+      thinking: thread.show_thinking
+        ? { type: 'adaptive', display: 'summarized' as const }
+        : { type: 'adaptive' },
+      // Per-thread effort guides adaptive-thinking depth. Omitted when null/invalid
+      // so the SDK applies its default ('high'). Interactive path only.
+      ...(threadEffort && { effort: threadEffort }),
       hooks: createHooks(hookContext),
       // Plugin: native skill discovery from .claude/skills/
       plugins: [{ type: 'local' as const, path: join(AGENT_CWD, '.claude').replace(/\\/g, '/') }],
       // Explicitly pass MCP servers — SDK isolation mode doesn't auto-discover .mcp.json
       ...(Object.keys(mcpServersFromConfig).length > 0 && { mcpServers: mcpServersFromConfig }),
+      // Use ONLY the explicit mcpServers above — ignore the global ~/.claude MCP config.
+      // This is the real ghost fix: kills the ambient bleed (sanctuary, google-workspace,
+      // imessage, etc.) that nulling the env vars did NOT remove.
+      strictMcpConfig: true,
     };
 
     // Resume existing session if available
     if (thread.current_session_id) {
       options.resume = thread.current_session_id;
     }
+
+    // Record the active streaming message for this thread so a canvas created
+    // mid-turn (via the canvas REST route) can link back to it. Cleared in the
+    // finally below when the turn ends.
+    activeMessageByThread.set(threadId, streamMsgId);
 
     registry.broadcast({
       type: 'stream_start',
@@ -452,11 +698,42 @@ export class AgentService {
         }
       } catch {}
 
-      // Build orientation context (thread, time, gap, status, vault)
-      // Prepended to prompt because SessionStart hooks don't fire in V1 query()
-      // Static content (CHAT TOOLS, skills, vault path) only on first message of session
-      const orientation = await buildOrientationContext(hookContext, isFirstMessage);
-      const enrichedPrompt = `[Context]\n${orientation}\n[/Context]\n\n${content}`;
+      // Build orientation context. Prepended to the prompt because SessionStart
+      // hooks don't fire in V1 query(). Context-rot fix (harvested from
+      // the reference app): first message of a session → 'session' mode (full snapshot:
+      // CHAT TOOLS, skills, life status, mantelpiece, recently-reached). Every
+      // subsequent turn → 'turn' mode (one [env] line). Keeps mutable state from
+      // fossilizing into the never-compacted interactive session.
+      const orientation = await buildOrientationContext(
+        hookContext,
+        isFirstMessage ? 'session' : 'turn',
+      );
+
+      // First message of a session → pre-fetch memory (mind_orient + mind_ground),
+      // since V1 query() doesn't fire the SessionStart hook that would normally do
+      // this. Skipped for autonomous wakes (own context path) and when no Mind MCP.
+      let memoryPrefetch = '';
+      if (isFirstMessage && !isAutonomous) {
+        try {
+          memoryPrefetch = await prefetchMindContext();
+        } catch { /* memory prefetch is best-effort */ }
+      }
+
+      // Attachment delivery: when the user attached files, append a system-aside
+      // note pointing the agent at each file's absolute on-disk path and telling
+      // it to Read them. This rides INTO the agent's prompt only — it is NOT in
+      // the user's persisted/displayed message (the bubble renders the thumbnail
+      // separately from metadata.attachments). Filepath + Read is universal
+      // (images, PDFs, docs, audio) and avoids base64 inflation. No attachments
+      // → empty string → zero behavioral change for text-only turns.
+      const attachmentNote = buildAttachmentNote(platformOpts?.images, cfg.identity.user_name);
+      if (attachmentNote) {
+        console.log(`[agent] attaching ${platformOpts?.images?.length} file path(s) to prompt for thread ${threadId}`);
+      }
+
+      const enrichedPrompt = (memoryPrefetch
+        ? `[Context]\n${orientation}\n\n${memoryPrefetch}\n[/Context]\n\n${content}`
+        : `[Context]\n${orientation}\n[/Context]\n\n${content}`) + attachmentNote;
 
       // Abort controller for stop_generation support
       activeAbortController = new AbortController();
@@ -465,7 +742,10 @@ export class AgentService {
       // File checkpointing for rewind support
       options.enableFileCheckpointing = true;
 
-      // V1 query — single params object with prompt and options
+      // V1 query — single params object with the plain string prompt and options.
+      // Attachments ride along as the filepath note already folded into
+      // enrichedPrompt (see buildAttachmentNote above); no streaming-input branch
+      // is needed, which keeps resume/session handling simple and uniform.
       const result = query({ prompt: enrichedPrompt, options });
       activeQuery = result;
 
@@ -507,20 +787,106 @@ export class AgentService {
           const streamEvent = (msg as any).event;
           if (streamEvent?.type === 'content_block_start' && streamEvent?.content_block?.type === 'thinking') {
             currentThinkingAccum = '';
+            // Stable per-block id + interleave offset, captured here and reused
+            // for this block's deltas + stop.
+            thinkingId = `${streamMsgId}-think-${++thinkingBlockSeq}`;
+            thinkingOffset = fullResponse.length;
+            if (MEASURE) {
+              mThinkDeltaCount = 0;
+              mThinkBlockChars = 0;
+              console.log(`[THINK-CADENCE] ${mt()} THINK-START block#${mThinkBlocks + 1}`);
+            }
           } else if (streamEvent?.type === 'content_block_delta' && streamEvent?.delta?.type === 'thinking_delta') {
             const thinkingText = streamEvent.delta.thinking || '';
             if (thinkingText) {
               currentThinkingAccum += thinkingText;
+              // Stream the growing block live. Volume is low (~13 deltas/turn),
+              // so per-delta broadcast needs no throttle. Cheap running summary:
+              // the first line, capped at ~80 chars.
+              const runningSummary = currentThinkingAccum
+                .split('\n', 1)[0]
+                .slice(0, 80);
+              registry.broadcast({
+                type: 'thinking',
+                id: thinkingId,
+                content: currentThinkingAccum,
+                summary: runningSummary,
+                textOffset: thinkingOffset,
+                isComplete: false,
+              });
+              if (MEASURE) {
+                mThinkDeltaCount++;
+                mThinkDeltaTotal++;
+                mThinkBlockChars += thinkingText.length;
+                mThinkCharsTotal += thinkingText.length;
+                console.log(`[THINK-CADENCE] ${mt()} thinking_delta len=${thinkingText.length} (block delta#${mThinkDeltaCount}, blockChars=${mThinkBlockChars}; allDeltas=${mThinkDeltaTotal}, allChars=${mThinkCharsTotal})`);
+              }
             }
           } else if (streamEvent?.type === 'content_block_stop' && currentThinkingAccum) {
+            if (MEASURE) {
+              mThinkBlocks++;
+              console.log(`[THINK-CADENCE] ${mt()} THINK-STOP block#${mThinkBlocks} deltas=${mThinkDeltaCount} finalLen=${currentThinkingAccum.length}`);
+            }
             const summary = extractThinkingSummary(currentThinkingAccum);
             thinkingBlocks.push({
-              textOffset: fullResponse.length,
+              textOffset: thinkingOffset,
               content: currentThinkingAccum,
               summary,
             });
-            registry.broadcast({ type: 'thinking', content: currentThinkingAccum, summary });
+            registry.broadcast({
+              type: 'thinking',
+              id: thinkingId,
+              content: currentThinkingAccum,
+              summary,
+              textOffset: thinkingOffset,
+              isComplete: true,
+            });
             currentThinkingAccum = '';
+          }
+
+          // Stream text deltas token-by-token. The SDK emits these partial
+          // stream_events for a text content block BEFORE the assembled
+          // `assistant` SDKMessage, so by the time the assistant handler runs
+          // the text is already in fullResponse. The assistant handler is made
+          // idempotent below to avoid double-emitting.
+          if (streamEvent?.type === 'content_block_start' && streamEvent?.content_block?.type === 'text') {
+            currentTextBlockStarted = true;
+            currentTextBlockHasDelta = false;
+          } else if (streamEvent?.type === 'content_block_delta' && streamEvent?.delta?.type === 'text_delta') {
+            const deltaText: string = streamEvent.delta.text || '';
+            if (deltaText) {
+              if (!currentTextBlockHasDelta) {
+                // First delta of this text block. Count it HERE (at the first
+                // delta), not at content_block_stop. The assembled `assistant`
+                // SDKMessage can arrive BEFORE this block's content_block_stop
+                // event — if the counter were still 0 then, the assistant
+                // handler's index check (0 < 0) would fail and the fallback
+                // would append the whole block again, doubling fullResponse.
+                // Deltas always precede the assembled message, so counting at
+                // the first delta closes that race.
+                textBlocksStreamedViaDelta++;
+                // Insert the '\n\n' separator once, before the first delta of a
+                // non-first text block (i.e. fullResponse already has content).
+                if (fullResponse) fullResponse += '\n\n';
+              }
+              currentTextBlockHasDelta = true;
+              fullResponse += deltaText;
+              registry.broadcast({
+                type: 'stream_token',
+                messageId: streamMsgId,
+                token: fullResponse,
+              });
+              if (MEASURE) {
+                mTokenCount++;
+                console.log(`[THINK-CADENCE] ${mt()} stream_token #${mTokenCount} (text_delta) chunkLen=${deltaText.length} totalTextLen=${fullResponse.length}`);
+              }
+            }
+          } else if (streamEvent?.type === 'content_block_stop' && currentTextBlockStarted) {
+            // Counting now happens at the first delta (see above) to avoid a
+            // race with the assembled assistant message. Here we only clear the
+            // per-block flags.
+            currentTextBlockStarted = false;
+            currentTextBlockHasDelta = false;
           }
         }
 
@@ -529,16 +895,52 @@ export class AgentService {
           if (assistantMsg.message?.content) {
             for (const block of assistantMsg.message.content) {
               if (block.type === 'text' && block.text) {
-                if (fullResponse) fullResponse += '\n\n' + block.text;
-                else fullResponse = block.text;
+                // Structural dedup against the delta stream. The stream_event
+                // branch above runs FIRST, so any block that delta-streamed is
+                // already in fullResponse. We track how many text blocks were
+                // delta-streamed (textBlocksStreamedViaDelta) and walk the
+                // assistant message's text blocks in order (assistantTextBlockIndex).
+                // If this block's index falls within the delta-streamed count it
+                // was already emitted -> skip. Otherwise fall back to append +
+                // broadcast. This is immune to SDK post-normalization (endsWith
+                // would double the block) and to legitimately-repeated text
+                // (endsWith would swallow the second copy). The index increments
+                // for every text block regardless of skip/fallback.
+                if (assistantTextBlockIndex < textBlocksStreamedViaDelta) {
+                  if (MEASURE) {
+                    console.log(`[THINK-CADENCE] ${mt()} assistant text block already streamed (skip dedup, idx=${assistantTextBlockIndex}/${textBlocksStreamedViaDelta}) len=${block.text.length}`);
+                  }
+                } else {
+                  if (fullResponse) fullResponse += '\n\n' + block.text;
+                  else fullResponse = block.text;
 
-                registry.broadcast({
-                  type: 'stream_token',
-                  messageId: streamMsgId,
-                  token: fullResponse,
-                });
+                  registry.broadcast({
+                    type: 'stream_token',
+                    messageId: streamMsgId,
+                    token: fullResponse,
+                  });
+                  if (MEASURE) {
+                    mTokenCount++;
+                    console.log(`[THINK-CADENCE] ${mt()} stream_token #${mTokenCount} (assistant fallback, idx=${assistantTextBlockIndex}/${textBlocksStreamedViaDelta}) chunkLen=${block.text.length} totalTextLen=${fullResponse.length}`);
+                  }
+                }
+                assistantTextBlockIndex++;
+              } else if (MEASURE && block.type === 'tool_use') {
+                mToolCount++;
+                console.log(`[THINK-CADENCE] ${mt()} tool_use #${mToolCount} name=${block.name} id=${block.id}`);
               }
               // Thinking blocks are captured from stream_event, not here (avoids duplicates)
+            }
+          }
+        } else if (MEASURE && msgType === 'user') {
+          // Tool results return as user-role messages with tool_result blocks.
+          const userMsg = msg as any;
+          const blocks = userMsg.message?.content;
+          if (Array.isArray(blocks)) {
+            for (const block of blocks) {
+              if (block?.type === 'tool_result') {
+                console.log(`[THINK-CADENCE] ${mt()} tool_result for id=${block.tool_use_id}`);
+              }
             }
           }
         } else if (msgType === 'result') {
@@ -564,7 +966,7 @@ export class AgentService {
             }
 
             // Per-turn usage log for API-key users. Skip for subscription mode
-            // because Mary's plan covers it — no cost attribution to surface.
+            // because the user's plan covers it — no cost attribution to surface.
             const authPrefs = getAuthPreferences();
             if (authPrefs.auth_mode === 'api_key' && authPrefs.usage_tracking_enabled) {
               try {
@@ -629,6 +1031,18 @@ export class AgentService {
             }
             toolInsertions.length = 0;
             thinkingBlocks.length = 0;
+            // Reset text-streaming state so post-compaction streaming starts from
+            // a clean slate — a mid-block compaction must not desync the '\n\n'
+            // separator or the index/counter dedup against the next assistant message.
+            currentTextBlockStarted = false;
+            currentTextBlockHasDelta = false;
+            textBlocksStreamedViaDelta = 0;
+            assistantTextBlockIndex = 0;
+            // Reset thinking-block streaming state too — same rationale as the
+            // text counters above; a mid-block compaction must re-derive ids
+            // and offsets cleanly for post-compaction thinking blocks.
+            thinkingBlockSeq = 0;
+            currentThinkingAccum = '';
           } else if (systemMsg.status === 'compacting') {
             console.log('[Compaction] Compacting in progress...');
           }
@@ -658,6 +1072,7 @@ export class AgentService {
       } catch (abortErr) {
         if (abortErr instanceof AbortError || (abortErr instanceof Error && abortErr.name === 'AbortError')) {
           console.log('[Agent] Generation stopped by user');
+          wasInterrupted = true;
           registry.broadcast({ type: 'generation_stopped' });
         } else {
           throw abortErr; // Re-throw non-abort errors to outer catch
@@ -671,6 +1086,8 @@ export class AgentService {
       // Clean up active query tracking
       activeAbortController = null;
       activeQuery = null;
+      // Turn is over — no message is streaming in this thread anymore.
+      activeMessageByThread.delete(threadId);
       // Track session transition and update for future resume
       if (sessionId) {
         const previousSessionId = thread.current_session_id;
@@ -692,6 +1109,8 @@ export class AgentService {
               sessionId,
               sessionType: (thread.session_type as 'v1' | 'v2') || 'v2',
               startedAt: now,
+              // Lineage: the new session succeeds the prior one (compaction/resume).
+              parentSessionId: previousSessionId || undefined,
             });
           } catch (err) {
             if (!(err instanceof Error && err.message.includes('UNIQUE'))) {
@@ -702,8 +1121,36 @@ export class AgentService {
 
         updateThreadSession(threadId, sessionId);
       }
+
+      // Delta-orientation stamp (PACK B): the ONE write. Marks "a turn ended
+      // here, now" per-thread + globally, so the next orientation (session-mode
+      // snapshot or autonomous wake slice) can render "Since you were last here
+      // (Xh ago)" from the companion_actions diary. Cheap KV; best-effort.
+      try {
+        const stampIso = new Date().toISOString();
+        setConfig(`thread.lastTurnAt.${threadId}`, stampIso);
+        setConfig('session.lastTurnAt', stampIso);
+      } catch { /* the stamp is garnish — never let it break turn teardown */ }
+
       presenceStatus = 'dormant';
       registry.broadcast({ type: 'presence', status: 'dormant' });
+
+      if (MEASURE) {
+        const avgDelta = mThinkDeltaTotal > 0 ? (mThinkCharsTotal / mThinkDeltaTotal).toFixed(1) : '0';
+        const shape = mThinkDeltaTotal === 0
+          ? 'no-thinking'
+          : (mThinkDeltaTotal / Math.max(mThinkBlocks, 1)) >= 5
+            ? 'MANY-SMALL-DELTAS'
+            : 'FEW-LARGE-CHUNKS';
+        console.log(`[THINK-CADENCE] ${mt()} SUMMARY blocks=${mThinkBlocks} thinkDeltas=${mThinkDeltaTotal} thinkChars=${mThinkCharsTotal} avgDeltaChars=${avgDelta} textTokens=${mTokenCount} toolCalls=${mToolCount} durationMs=${Date.now() - mStart} shape=${shape}`);
+      }
+    }
+
+    // Interrupted before any content streamed (e.g. stop-and-steer fired early):
+    // don't persist a "[No response]" ghost bubble. generation_stopped already
+    // cleared the streaming UI, and the steer message becomes the next turn.
+    if (wasInterrupted && !fullResponse.trim()) {
+      return '';
     }
 
     // Build segments for interleaved tool/thinking display
@@ -722,6 +1169,11 @@ export class AgentService {
       metadata: messageMetadata,
       createdAt: new Date().toISOString(),
     });
+
+    // Compaction-insurance tone tracker: every ~15 persisted messages per
+    // thread, snapshot the keyword-based emotional arc so PreCompact can
+    // preserve it. Zero-LLM, <1ms; never blocks the turn.
+    try { maybeSnapshotTone(threadId); } catch { /* best-effort */ }
 
     // End stream
     registry.broadcast({
@@ -744,4 +1196,24 @@ export class AgentService {
 
     return fullResponse;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Agent singleton accessor (Hale finding #1, 2026-07-02). The background
+// subagents (outlook-author, handoff, digest) call the SDK's query() directly,
+// OUTSIDE the QueryQueue — two concurrent query() calls contend for the same
+// subscription rate limit and can bounce the user's live interactive turn. This
+// gives them a shared busy-check so they defer to the interactive path.
+// (Registered by server.ts right after construction.)
+// ---------------------------------------------------------------------------
+let liveAgentService: AgentService | null = null;
+
+export function registerAgentService(agent: AgentService): void {
+  liveAgentService = agent;
+}
+
+/** True when the interactive QueryQueue is mid-turn. Background authors
+ *  should defer rather than fire a concurrent query(). */
+export function isInteractiveAgentBusy(): boolean {
+  return liveAgentService?.isProcessing() ?? false;
 }

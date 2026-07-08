@@ -12,10 +12,17 @@ interface ModelPricing {
 }
 
 const PRICING: Record<string, ModelPricing> = {
+  // Fable tier — most capable widely released model (GA 2026-06-09). 1M ctx, 128k out.
+  // Adaptive thinking is ALWAYS ON for Fable (no budget_tokens; effort defaults high).
+  'claude-fable-5': { input: 10, output: 50, cache_write: 12.5, cache_read: 1.0 },
   // Opus tier
+  'claude-opus-4-8[1m]': { input: 15, output: 75, cache_write: 18.75, cache_read: 1.5 },
+  'claude-opus-4-8': { input: 15, output: 75, cache_write: 18.75, cache_read: 1.5 },
   'claude-opus-4-7': { input: 15, output: 75, cache_write: 18.75, cache_read: 1.5 },
   'claude-opus-4-6': { input: 15, output: 75, cache_write: 18.75, cache_read: 1.5 },
   // Sonnet tier
+  // Sonnet 5 — introductory $2/$10 per MTok through 2026-08-31 (reverts to standard after; update then). 1M ctx, 128k out.
+  'claude-sonnet-5': { input: 2, output: 10, cache_write: 2.5, cache_read: 0.2 },
   'claude-sonnet-4-6': { input: 3, output: 15, cache_write: 3.75, cache_read: 0.3 },
   'claude-sonnet-4-5': { input: 3, output: 15, cache_write: 3.75, cache_read: 0.3 },
   // Haiku tier

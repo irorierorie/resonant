@@ -1,14 +1,14 @@
 // Command Center — household management tools
-// Ported from Vale Home (simon-chat) to resonant-v1
+// Ported from the reference app's household-management tools
 import crypto from 'crypto';
-import { getDb } from './db.js';
+import { getDb, getConfig } from './db.js';
 import { getResonantConfig } from '../config.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function today(): string {
+export function today(): string {
   return new Date().toLocaleDateString('en-CA', { timeZone: getResonantConfig().identity.timezone });
 }
 
@@ -55,6 +55,8 @@ export interface CareEntry {
   category: string;
   value: string | null;
   note: string | null;
+  /** Provenance of the last write: 'ui' (browser page) or 'mcp' (companion in chat). */
+  source: string;
   created_at: string;
   updated_at: string;
 }
@@ -66,22 +68,112 @@ export function upsertCareEntry(params: {
   category: string;
   value?: string;
   note?: string;
+  source?: 'ui' | 'mcp';
 }): CareEntry {
   const db = getDb();
   const id = params.id || uuid();
   const date = params.date || today();
   const person = params.person || getResonantConfig().command_center.default_person;
+  const source = params.source || 'ui';
 
   db.prepare(`
-    INSERT INTO care_entries (id, date, person, category, value, note)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO care_entries (id, date, person, category, value, note, source)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(date, person, category) DO UPDATE SET
       value = COALESCE(excluded.value, value),
       note = COALESCE(excluded.note, note),
+      source = excluded.source,
       updated_at = datetime('now')
-  `).run(id, date, person, params.category, params.value || null, params.note || null);
+  `).run(id, date, person, params.category, params.value || null, params.note || null, source);
 
   return db.prepare('SELECT * FROM care_entries WHERE date = ? AND person = ? AND category = ?').get(date, person, params.category) as CareEntry;
+}
+
+/**
+ * Repeatable-category logging (water ×N, etc): increments the numeric value on
+ * the single (date, person, category) row. Value is stored as a stringified
+ * count; callers get the numeric count back. An explicit numeric `value` sets
+ * the count outright (correction path) instead of incrementing.
+ */
+export function incrementCareEntry(params: {
+  date?: string;
+  person?: string;
+  category: string;
+  value?: string;
+  note?: string;
+  source?: 'ui' | 'mcp';
+}): { entry: CareEntry; count: number } {
+  const db = getDb();
+  const date = params.date || today();
+  const person = params.person || getResonantConfig().command_center.default_person;
+
+  let count: number;
+  const explicit = params.value !== undefined && params.value !== null && params.value !== '' && Number.isFinite(Number(params.value));
+  if (explicit) {
+    count = Math.max(0, Math.round(Number(params.value)));
+  } else {
+    const existing = db.prepare(
+      'SELECT value FROM care_entries WHERE date = ? AND person = ? AND category = ?'
+    ).get(date, person, params.category) as { value: string | null } | undefined;
+    const prev = existing?.value != null ? parseInt(existing.value, 10) : 0;
+    count = (Number.isFinite(prev) ? prev : 0) + 1;
+  }
+
+  const entry = upsertCareEntry({
+    date,
+    person,
+    category: params.category,
+    value: String(count),
+    note: params.note,
+    source: params.source,
+  });
+  return { entry, count };
+}
+
+// ---------------------------------------------------------------------------
+// Care categories (config-driven chips — GET /api/cc/config)
+// ---------------------------------------------------------------------------
+
+export interface CareCategory {
+  key: string;
+  label: string;
+  repeatable: boolean;
+  target?: number;
+}
+
+// Default care categories — generic examples in day order. Water is the
+// repeatable counter (target 8). Overridable via a config KV row
+// (key 'cc.care_categories', JSON array).
+const DEFAULT_CARE_CATEGORIES: CareCategory[] = [
+  { key: 'breakfast', label: 'Breakfast', repeatable: false },
+  { key: 'water', label: 'Water', repeatable: true, target: 8 },
+  { key: 'meds', label: 'Meds', repeatable: false },
+  { key: 'shower', label: 'Shower', repeatable: false },
+  { key: 'movement', label: 'Movement', repeatable: false },
+  { key: 'lunch', label: 'Lunch', repeatable: false },
+  { key: 'dinner', label: 'Dinner', repeatable: false },
+];
+
+export function getCareCategories(): CareCategory[] {
+  try {
+    const raw = getConfig('cc.care_categories');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0 && parsed.every(c => c && typeof c.key === 'string')) {
+        return parsed.map((c: any) => ({
+          key: c.key,
+          label: typeof c.label === 'string' && c.label ? c.label : c.key,
+          repeatable: !!c.repeatable,
+          ...(typeof c.target === 'number' && Number.isFinite(c.target) ? { target: c.target } : {}),
+        }));
+      }
+    }
+  } catch { /* malformed KV row — fall through to coded defaults */ }
+  return DEFAULT_CARE_CATEGORIES;
+}
+
+export function isRepeatableCategory(category: string): boolean {
+  return getCareCategories().some(c => c.key === category && c.repeatable);
 }
 
 export function getCareEntries(date: string, person?: string): CareEntry[] {
@@ -103,6 +195,141 @@ export function getCareHistory(person: string, days = 7): CareEntry[] {
 export function deleteCareEntry(id: string): boolean {
   const result = getDb().prepare('DELETE FROM care_entries WHERE id = ?').run(id);
   return result.changes > 0;
+}
+
+// ---------------------------------------------------------------------------
+// Care routines (completion read from care_entries)
+// ---------------------------------------------------------------------------
+
+export interface CareRoutine {
+  id: string;
+  label: string;
+  category: string;
+  window_start: string | null;
+  window_end: string;
+  days: string;
+  active: number;
+  created_at: string;
+}
+
+export interface RoutineStatus {
+  routine: CareRoutine;
+  status: 'done' | 'pending' | 'missed';
+  completedAt?: string;
+}
+
+// Example routines — seeded once into an empty table; the user tunes later.
+const DEFAULT_ROUTINES: Array<{ label: string; category: string; window_end: string; days: string }> = [
+  { label: 'First meal', category: 'breakfast', window_end: '14:00', days: 'daily' },
+  { label: 'Second meal', category: 'dinner', window_end: '21:00', days: 'daily' },
+  { label: 'Shower', category: 'shower', window_end: '20:00', days: 'daily' },
+  { label: 'Movement', category: 'movement', window_end: '20:00', days: 'daily' },
+];
+
+let routinesSeeded = false;
+
+function ensureRoutinesSeeded(): void {
+  if (routinesSeeded) return;
+  const db = getDb();
+  const count = (db.prepare('SELECT COUNT(*) as c FROM care_routines').get() as { c: number }).c;
+  if (count === 0) {
+    const stmt = db.prepare('INSERT INTO care_routines (id, label, category, window_end, days) VALUES (?, ?, ?, ?, ?)');
+    for (const r of DEFAULT_ROUTINES) {
+      stmt.run(uuid(), r.label, r.category, r.window_end, r.days);
+    }
+  }
+  routinesSeeded = true;
+}
+
+function nowHM(): string {
+  return new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: getResonantConfig().identity.timezone });
+}
+
+function todayWeekday(): string {
+  return new Date().toLocaleDateString('en-GB', { weekday: 'long', timeZone: getResonantConfig().identity.timezone }).toLowerCase();
+}
+
+export function createRoutine(params: {
+  label: string;
+  category: string;
+  window_end: string;
+  window_start?: string;
+  days?: string;
+}): CareRoutine {
+  ensureRoutinesSeeded();
+  const db = getDb();
+  const id = uuid();
+  db.prepare(`
+    INSERT INTO care_routines (id, label, category, window_start, window_end, days)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(id, params.label, params.category, params.window_start || null, params.window_end, params.days || 'daily');
+  return db.prepare('SELECT * FROM care_routines WHERE id = ?').get(id) as CareRoutine;
+}
+
+export function updateRoutine(id: string, updates: Partial<{
+  label: string;
+  category: string;
+  window_start: string;
+  window_end: string;
+  days: string;
+  active: boolean;
+}>): boolean {
+  const sets: string[] = [];
+  const values: any[] = [];
+
+  if (updates.label !== undefined) { sets.push('label = ?'); values.push(updates.label); }
+  if (updates.category !== undefined) { sets.push('category = ?'); values.push(updates.category); }
+  if (updates.window_start !== undefined) { sets.push('window_start = ?'); values.push(updates.window_start); }
+  if (updates.window_end !== undefined) { sets.push('window_end = ?'); values.push(updates.window_end); }
+  if (updates.days !== undefined) { sets.push('days = ?'); values.push(updates.days); }
+  if (updates.active !== undefined) { sets.push('active = ?'); values.push(updates.active ? 1 : 0); }
+
+  if (sets.length === 0) return false;
+  values.push(id);
+  const result = getDb().prepare(`UPDATE care_routines SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+  return result.changes > 0;
+}
+
+export function listRoutines(activeOnly = true): CareRoutine[] {
+  ensureRoutinesSeeded();
+  const db = getDb();
+  if (activeOnly) {
+    return db.prepare('SELECT * FROM care_routines WHERE active = 1 ORDER BY window_end, label').all() as CareRoutine[];
+  }
+  return db.prepare('SELECT * FROM care_routines ORDER BY window_end, label').all() as CareRoutine[];
+}
+
+export function deactivateRoutine(id: string): boolean {
+  const result = getDb().prepare('UPDATE care_routines SET active = 0 WHERE id = ?').run(id);
+  return result.changes > 0;
+}
+
+/** True hard delete — row removed outright. Deactivate stays the default path;
+ *  this backs DELETE /api/cc/routines/:id?hard=true. */
+export function deleteRoutine(id: string): boolean {
+  const result = getDb().prepare('DELETE FROM care_routines WHERE id = ?').run(id);
+  return result.changes > 0;
+}
+
+export function getRoutineStatusToday(): RoutineStatus[] {
+  ensureRoutinesSeeded();
+  const db = getDb();
+  const todayStr = today();
+  const weekday = todayWeekday();
+  const now = nowHM();
+  const person = getResonantConfig().command_center.default_person;
+
+  const dueToday = listRoutines(true).filter(r =>
+    r.days === 'daily' || r.days.toLowerCase().split(',').map(d => d.trim()).includes(weekday)
+  );
+
+  return dueToday.map(r => {
+    const row = db.prepare(
+      'SELECT created_at FROM care_entries WHERE date = ? AND LOWER(person) = LOWER(?) AND category = ?'
+    ).get(todayStr, person, r.category) as { created_at: string } | undefined;
+    if (row) return { routine: r, status: 'done' as const, completedAt: row.created_at };
+    return { routine: r, status: now > r.window_end ? 'missed' as const : 'pending' as const };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -516,6 +743,22 @@ export function updateCycleAverages(): void {
   db.prepare("INSERT INTO cycle_settings (id, average_cycle_length, average_period_length) VALUES ('1', ?, ?) ON CONFLICT(id) DO UPDATE SET average_cycle_length = excluded.average_cycle_length, average_period_length = excluded.average_period_length, updated_at = datetime('now')").run(avgCycle, avgPeriod);
 }
 
+// Direct setter — unlike updateCycleAverages() (which recomputes from history),
+// this writes explicit values. cycle_settings is a single-row table (id '1',
+// seeded by getCycleSettings).
+export function setCycleSettings(updates: {
+  average_cycle_length?: number;
+  average_period_length?: number;
+}): { average_cycle_length: number; average_period_length: number } {
+  const current = getCycleSettings(); // ensures the row exists
+  const cycleLen = updates.average_cycle_length ?? current.average_cycle_length;
+  const periodLen = updates.average_period_length ?? current.average_period_length;
+  getDb().prepare(
+    "UPDATE cycle_settings SET average_cycle_length = ?, average_period_length = ?, updated_at = datetime('now')"
+  ).run(cycleLen, periodLen);
+  return { average_cycle_length: cycleLen, average_period_length: periodLen };
+}
+
 export function startPeriod(date?: string, notes?: string): string {
   const db = getDb();
   const d = date || today();
@@ -530,13 +773,46 @@ export function startPeriod(date?: string, notes?: string): string {
   return `Period started on ${d}`;
 }
 
-export function endPeriod(date?: string): string {
+export function endPeriod(date?: string): { ok: boolean; message: string } {
   const db = getDb();
   const d = date || today();
   const result = db.prepare("UPDATE cycles SET end_date = ?, updated_at = datetime('now') WHERE end_date IS NULL").run(d);
-  if (result.changes === 0) return 'No open period to end';
+  // No open period → honest failure (UI stops lying about having ended one).
+  if (result.changes === 0) return { ok: false, message: 'No open period to end' };
   updateCycleAverages();
-  return `Period ended on ${d}`;
+  return { ok: true, message: `Period ended on ${d}` };
+}
+
+/** Edit a cycles row (fix a mis-tapped period start/end). end_date accepts null
+ *  to reopen a period. Recomputes averages after a successful write. */
+export function updateCycleRow(id: string, updates: {
+  start_date?: string;
+  end_date?: string | null;
+  notes?: string | null;
+}): any | null {
+  const db = getDb();
+  const sets: string[] = ["updated_at = datetime('now')"];
+  const values: any[] = [];
+
+  if (updates.start_date !== undefined) { sets.push('start_date = ?'); values.push(updates.start_date); }
+  if (updates.end_date !== undefined) { sets.push('end_date = ?'); values.push(updates.end_date); }
+  if (updates.notes !== undefined) { sets.push('notes = ?'); values.push(updates.notes); }
+  if (sets.length === 1) return null; // nothing to update
+
+  values.push(id);
+  const result = db.prepare(`UPDATE cycles SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+  if (result.changes === 0) return null;
+  updateCycleAverages();
+  return db.prepare('SELECT * FROM cycles WHERE id = ?').get(id);
+}
+
+/** Remove a cycles row outright (a mis-tap that shouldn't exist at all).
+ *  Recomputes averages after a successful delete. */
+export function deleteCycleRow(id: string): boolean {
+  const result = getDb().prepare('DELETE FROM cycles WHERE id = ?').run(id);
+  if (result.changes === 0) return false;
+  updateCycleAverages();
+  return true;
 }
 
 export function logCycleDaily(params: {
@@ -941,6 +1217,30 @@ export function listCountdowns(): any[] {
   }));
 }
 
+export function updateCountdown(id: string, updates: Partial<{
+  title: string;
+  target_date: string;
+  emoji: string;
+  color: string;
+}>): any | null {
+  const db = getDb();
+  const sets: string[] = [];
+  const values: any[] = [];
+  if (updates.title !== undefined) { sets.push('title = ?'); values.push(updates.title); }
+  if (updates.target_date !== undefined) { sets.push('target_date = ?'); values.push(updates.target_date); }
+  if (updates.emoji !== undefined) { sets.push('emoji = ?'); values.push(updates.emoji); }
+  if (updates.color !== undefined) { sets.push('color = ?'); values.push(updates.color); }
+  if (sets.length === 0) return null;
+  values.push(id);
+  const result = db.prepare(`UPDATE countdowns SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+  if (result.changes === 0) return null;
+  const row = db.prepare('SELECT * FROM countdowns WHERE id = ?').get(id) as any;
+  return {
+    ...row,
+    days_until: Math.round((new Date(row.target_date).getTime() - new Date(today()).getTime()) / 86400000),
+  };
+}
+
 export function deleteCountdown(id: string): boolean {
   const result = getDb().prepare('DELETE FROM countdowns WHERE id = ?').run(id);
   return result.changes > 0;
@@ -965,6 +1265,17 @@ export function upsertDailyWin(params: { text: string; who?: string; date?: stri
 
 export function getDailyWins(date?: string): any[] {
   return getDb().prepare('SELECT * FROM daily_wins WHERE date = ?').all(date || today()) as any[];
+}
+
+export function getRecentDailyWins(days = 7): any[] {
+  const since = new Date();
+  since.setDate(since.getDate() - days);
+  const sinceStr = since.toISOString().split('T')[0];
+  return getDb().prepare('SELECT * FROM daily_wins WHERE date >= ? ORDER BY date DESC, who').all(sinceStr) as any[];
+}
+
+export function deleteDailyWin(id: string): boolean {
+  return getDb().prepare('DELETE FROM daily_wins WHERE id = ?').run(id).changes > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -1016,33 +1327,30 @@ export function getCcStatus(): string {
     }
   }
 
-  // Today's events
-  const events = db.prepare('SELECT * FROM events WHERE start_date = ? ORDER BY start_time').all(todayStr) as any[];
-  if (events.length > 0) {
-    lines.push('**Today\'s events:** ' + events.map(e => `${e.start_time || 'all day'} ${e.title} (${e.category})`).join(', '));
-  }
-
-  // Upcoming events
-  const upcoming = db.prepare('SELECT * FROM events WHERE start_date > ? ORDER BY start_date, start_time LIMIT 5').all(todayStr) as any[];
-  if (upcoming.length > 0) {
-    lines.push('**Upcoming:** ' + upcoming.map(e => `${e.start_date} ${e.title}`).join(', '));
-  }
-
-  // Active tasks
-  const tasks = db.prepare("SELECT t.*, p.name as project_name FROM tasks t LEFT JOIN projects p ON t.project_id = p.id WHERE t.status = 'active' ORDER BY t.priority DESC, t.due_date").all() as any[];
-  if (tasks.length > 0) {
-    const byProject = new Map<string, any[]>();
-    for (const t of tasks) {
-      const key = t.project_name || 'No project';
-      if (!byProject.has(key)) byProject.set(key, []);
-      byProject.get(key)!.push(t);
+  // Routines — care-routine summary for today (plain prose; watchers read the
+  // DB directly, never parse this line)
+  try {
+    const routines = getRoutineStatusToday();
+    if (routines.length > 0) {
+      const tz = getResonantConfig().identity.timezone;
+      lines.push('**Routines:** ' + routines.map(r => {
+        const label = r.routine.label.toLowerCase();
+        if (r.status === 'done') {
+          let at = '';
+          if (r.completedAt) {
+            // care_entries.created_at is SQLite UTC "YYYY-MM-DD HH:MM:SS" — render local
+            const iso = r.completedAt.includes('T') ? r.completedAt : r.completedAt.replace(' ', 'T') + 'Z';
+            const d = new Date(iso);
+            if (!isNaN(d.getTime())) {
+              at = ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: tz });
+            }
+          }
+          return `${label} done${at}`;
+        }
+        return `${label} ${r.status === 'missed' ? 'MISSED' : 'pending'}`;
+      }).join(' · '));
     }
-    const taskLines: string[] = [];
-    for (const [proj, projTasks] of byProject) {
-      taskLines.push(`${proj}: ${projTasks.map(t => `${t.priority > 0 ? '!' : ''}${t.text}${t.due_date ? ' (due ' + t.due_date + ')' : ''}`).join(', ')}`);
-    }
-    lines.push('**Tasks:** ' + taskLines.join(' | '));
-  }
+  } catch { /* routines never block status */ }
 
   // Cycle status
   try {

@@ -28,14 +28,17 @@ function makeConfig(overrides: Partial<ResonantConfig> = {}): ResonantConfig {
     orchestrator: {
       enabled: true,
       wake_prompts_path: resolve(root, 'prompts/wake.md'),
+      wake_prompts_dir: resolve(root, 'prompts/wakes'),
       schedules: {},
       failsafe: { enabled: false, gentle_minutes: 120, concerned_minutes: 720, emergency_minutes: 1440 },
     },
-    hooks: { context_injection: true, safe_write_prefixes: [] },
+    handoff: { enabled: false },
+    hooks: { context_injection: true, safe_write_prefixes: [], workspace_root: '', vault_path: '', extra_write_paths: [] },
     voice: { enabled: false, elevenlabs_voice_id: '' },
     discord: { enabled: false, owner_user_id: '' },
     telegram: { enabled: false, owner_chat_id: '' },
     integrations: { life_api_url: '', mind_cloud: { enabled: false, mcp_url: '' } },
+    google: { enabled: false, client_id: '', client_secret: '' },
     command_center: {
       enabled: false,
       default_person: 'user',

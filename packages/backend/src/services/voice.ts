@@ -90,7 +90,11 @@ export class VoiceService {
       `--${boundary}`,
       'Content-Disposition: form-data; name="model"',
       '',
-      'whisper-large-v3',
+      'whisper-large-v3-turbo',
+      `--${boundary}`,
+      'Content-Disposition: form-data; name="language"',
+      '',
+      'en',
       `--${boundary}--`,
       '',
     ].join('\r\n');
@@ -321,13 +325,25 @@ export class VoiceService {
     const fileMeta = saveFile(audioBuffer, 'voice-note.mp3', 'audio/mpeg');
 
     const now = new Date().toISOString();
+    // Emit the new attachment shape so the MessageBubble renders an inline audio
+    // player (a voice note from the companion): transcript as the body + a playable clip.
     const audioMessage = createMessage({
       id: crypto.randomUUID(),
       threadId,
       role: 'companion',
-      content: fileMeta.url,
-      contentType: 'audio',
-      metadata: { transcript: text, fileId: fileMeta.fileId, filename: fileMeta.filename, size: fileMeta.size },
+      content: text,
+      contentType: 'text',
+      metadata: {
+        source: 'voice',
+        attachments: [{
+          fileId: fileMeta.fileId,
+          filename: fileMeta.filename,
+          contentType: 'audio',
+          url: fileMeta.url,
+          mimeType: 'audio/mpeg',
+          size: fileMeta.size,
+        }],
+      },
       createdAt: now,
     });
 

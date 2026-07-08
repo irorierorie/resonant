@@ -1,18 +1,65 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Mobile viewport with safe-area support for notch / home indicator -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+
+    <!-- PWA / theme -->
+    <meta name="theme-color" content="#c9a87c" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Resonant" />
+
+    <!-- Icons -->
+    <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+
     <title>Resonant</title>
+    <!-- Hearth typefaces: Lora (editorial/serif), Inter (body ≤500w), JetBrains Mono (timestamps/code) -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500&family=Inter:wght@300;400;500&family=JetBrains+Mono:wght@400&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&family=Lora:ital,wght@0,400;0,500;1,400;1,500&family=JetBrains+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     />
   </head>
   <body>
     <div id="root"></div>
-    <script type="module" src="/src/client.tsx"></script>
+    <script type="module" src="/src/main.tsx"></script>
+    <!-- Service Worker registration for PWA installability + offline shell -->
+    <script>
+      if ('serviceWorker' in navigator) {
+        var swReg = null;
+        // A first install fires controllerchange once (clients.claim) with no prior
+        // controller — that is NOT an update, so don't surface the update pill for it.
+        var hadController = !!navigator.serviceWorker.controller;
+        window.addEventListener('load', function () {
+          navigator.serviceWorker.register('/sw.js').then(function (reg) {
+            swReg = reg;
+          }).catch(function (err) {
+            console.warn('SW registration failed:', err);
+          });
+        });
+
+        // On tab resume, ask the SW to check for an updated version.
+        // This is the iOS PWA gap: background tabs never receive push updates,
+        // so resume is the only opportunity to pull a new SW.
+        document.addEventListener('visibilitychange', function () {
+          if (document.visibilityState === 'visible' && swReg) {
+            swReg.update();
+          }
+        });
+
+        // When a new SW takes control (after install + skipWaiting), surface the
+        // update pill by dispatching an event the React tree can listen for.
+        navigator.serviceWorker.addEventListener('controllerchange', function () {
+          if (!hadController) { hadController = true; return; }
+          window.dispatchEvent(new CustomEvent('resonant:sw-updated'));
+        });
+      }
+    </script>
   </body>
 </html>

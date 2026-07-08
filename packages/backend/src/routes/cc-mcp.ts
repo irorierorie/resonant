@@ -2,53 +2,26 @@
 // Exposes all command center tools as MCP tools callable by the companion in chat
 import { Router } from 'express';
 import * as cc from '../services/cc.js';
-import { getConfig, setConfig } from '../services/db.js';
 import { getResonantConfig } from '../config.js';
+import { registry } from '../services/ws.js';
 
 const router = Router();
+
+// Live ripple — every cc mutation from chat lands on the open /command page.
+// Same unknown-cast pattern as mantelpiece_update in routes/api.ts (cc_update
+// is not in the shared ServerMessage union; shared is owned elsewhere).
+type CcSection = 'care' | 'routines' | 'cycle' | 'wins' | 'countdowns';
+
+function broadcastCcUpdate(section: CcSection): void {
+  registry.broadcast({ type: 'cc_update', section } as unknown as Parameters<typeof registry.broadcast>[0]);
+}
 
 // Tool definitions — what the companion sees when the agent lists tools
 const TOOLS = [
   {
     name: 'cc_status',
-    description: 'Dashboard overview: tasks, events, care, cycle, pets, countdowns, wins. Call with no arguments for a full summary.',
+    description: 'Relational dashboard overview: care, cycle, pets, countdowns, wins. Call with no arguments for a full summary.',
     inputSchema: { type: 'object', properties: {}, required: [] },
-  },
-  {
-    name: 'cc_task',
-    description: 'Manage tasks. Actions: add, list, complete, update, delete.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        action: { type: 'string', enum: ['add', 'list', 'complete', 'update', 'delete'], description: 'Action to perform' },
-        id: { type: 'string', description: 'Task ID (for complete/update/delete)' },
-        text: { type: 'string', description: 'Task text (for add, or partial match for complete)' },
-        project: { type: 'string', description: 'Project name (auto-creates if new)' },
-        date: { type: 'string', description: 'Date scope YYYY-MM-DD' },
-        due_date: { type: 'string', description: 'Due date YYYY-MM-DD' },
-        priority: { type: 'number', description: '0=normal, 1=high, 2=urgent' },
-        status: { type: 'string', description: 'Filter: active, completed, all' },
-      },
-      required: ['action'],
-    },
-  },
-  {
-    name: 'cc_project',
-    description: 'Manage projects. Actions: add, list, update, delete.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        action: { type: 'string', enum: ['add', 'list', 'update', 'delete'], description: 'Action' },
-        id: { type: 'string', description: 'Project ID (for update/delete)' },
-        name: { type: 'string', description: 'Project name' },
-        description: { type: 'string' },
-        owner: { type: 'string' },
-        deadline: { type: 'string', description: 'YYYY-MM-DD' },
-        color: { type: 'string', description: 'Hex color' },
-        status: { type: 'string', description: 'active, completed, all' },
-      },
-      required: ['action'],
-    },
   },
   {
     name: 'cc_care',
@@ -63,26 +36,6 @@ const TOOLS = [
         note: { type: 'string', description: 'Optional note (JSON array for stacking)' },
         date: { type: 'string', description: 'YYYY-MM-DD (default: today)' },
         days: { type: 'number', description: 'History lookback days (default: 7)' },
-      },
-      required: ['action'],
-    },
-  },
-  {
-    name: 'cc_event',
-    description: 'Manage calendar events. Actions: add, list, update, delete. Supports recurrence.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        action: { type: 'string', enum: ['add', 'list', 'update', 'delete'], description: 'Action' },
-        id: { type: 'string', description: 'Event ID (for update/delete)' },
-        title: { type: 'string' },
-        start_date: { type: 'string', description: 'YYYY-MM-DD' },
-        start_time: { type: 'string', description: 'HH:MM' },
-        end_date: { type: 'string' },
-        end_time: { type: 'string' },
-        category: { type: 'string', description: 'default, work, personal, health, home' },
-        description: { type: 'string' },
-        recurrence: { type: 'string', description: 'JSON: {type:"weekly"|"monthly"|"yearly", interval:1}' },
       },
       required: ['action'],
     },
@@ -129,42 +82,6 @@ const TOOLS = [
     },
   },
   {
-    name: 'cc_list',
-    description: 'Manage lists and items. Actions: create, view, add, check, delete, clear.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        action: { type: 'string', enum: ['create', 'view', 'list_all', 'add', 'check', 'delete_list', 'delete_item', 'clear'], description: 'Action' },
-        list_id: { type: 'string' },
-        list_name: { type: 'string', description: 'Alternative to list_id' },
-        name: { type: 'string', description: 'New list name (for create)' },
-        items: { type: 'array', items: { type: 'string' }, description: 'Items to add' },
-        item: { type: 'string', description: 'Single item to add' },
-        item_id: { type: 'string', description: 'For check/delete_item' },
-        checked: { type: 'boolean', description: 'Toggle state (default true)' },
-        all: { type: 'boolean', description: 'Clear all items (default: only checked)' },
-      },
-      required: ['action'],
-    },
-  },
-  {
-    name: 'cc_expense',
-    description: 'Track expenses. Actions: add, list, stats.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        action: { type: 'string', enum: ['add', 'list', 'stats'], description: 'Action' },
-        amount: { type: 'number' },
-        category: { type: 'string', description: 'groceries, bills, dining, transport, entertainment, health, home, other' },
-        description: { type: 'string' },
-        paid_by: { type: 'string' },
-        date: { type: 'string' },
-        period: { type: 'string', description: 'week, month, year (for stats)' },
-      },
-      required: ['action'],
-    },
-  },
-  {
     name: 'cc_countdown',
     description: 'Manage countdowns. Actions: add, list, delete.',
     inputSchema: {
@@ -194,28 +111,32 @@ const TOOLS = [
   },
   {
     name: 'cc_scratchpad',
-    description: 'Persistent scratchpad — notes and tasks stay until removed. Actions: status (view all), add_note, add_task, add_event, remove_note, remove_task, clear_notes.',
+    description: 'House NOTES only — sticky notes on the Home timeline (letters, reminders-in-passing, things for the user to see). NOT for tasks or events: real tasks go to google-workspace Tasks, real events to google-workspace Calendar — deliberate split (2026-07-03): the world\'s paperwork lives in Google, the house keeps care. Actions: status (view all), add_note, remove_note, clear_notes.',
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['status', 'add_note', 'add_task', 'add_event', 'remove_note', 'remove_task', 'clear_notes'], description: 'Action' },
-        text: { type: 'string', description: 'Note/task text or event title (for add_note/add_task/add_event)' },
-        id: { type: 'string', description: 'Note or task ID (for remove_note/remove_task)' },
-        start_date: { type: 'string', description: 'Event date YYYY-MM-DD (for add_event, default: today)' },
-        start_time: { type: 'string', description: 'Event time HH:MM (for add_event)' },
+        action: { type: 'string', enum: ['status', 'add_note', 'remove_note', 'clear_notes'], description: 'Action' },
+        text: { type: 'string', description: 'Note text (for add_note)' },
+        id: { type: 'string', description: 'Note ID (for remove_note)' },
       },
       required: ['action'],
     },
   },
   {
-    name: 'cc_presence',
-    description: 'Get or set availability status.',
+    name: 'cc_routine',
+    description: 'Sir\'s Orders as data — daily/weekly routines with completion windows, completion read from care entries. Actions: list, create, update, deactivate, status.',
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['get', 'set'], description: 'Action' },
-        emoji: { type: 'string', description: 'Status emoji' },
-        label: { type: 'string', description: 'Status label' },
+        action: { type: 'string', enum: ['list', 'create', 'update', 'deactivate', 'status'], description: 'Action' },
+        id: { type: 'string', description: 'Routine ID (for update/deactivate)' },
+        label: { type: 'string', description: 'Human label, e.g. "First meal"' },
+        category: { type: 'string', description: 'Maps to care_entries category: breakfast, dinner, shower, movement, meds, ...' },
+        window_start: { type: 'string', description: 'HH:MM window start (optional)' },
+        window_end: { type: 'string', description: 'HH:MM deadline — past this with no care entry = MISSED' },
+        days: { type: 'string', description: "'daily' or CSV of lowercase weekdays, e.g. 'tuesday' (default: daily)" },
+        active: { type: 'boolean', description: 'Reactivate (true) or deactivate (false) — for update' },
+        include_inactive: { type: 'boolean', description: 'Include deactivated routines (for list)' },
       },
       required: ['action'],
     },
@@ -226,47 +147,17 @@ const TOOLS = [
 
 function handleTool(name: string, args: any): string {
   const config = getResonantConfig();
-  const currency = config.command_center.currency_symbol;
   const defaultPerson = config.command_center.default_person;
 
   switch (name) {
     case 'cc_status':
       return cc.getCcStatus();
 
-    case 'cc_task': {
-      const a = args.action;
-      if (a === 'add') {
-        const task = cc.addTask({ text: args.text, project: args.project, date: args.date, due_date: args.due_date, priority: args.priority, created_by: args.created_by });
-        return `Task added: ${task.text} (${task.id})`;
-      }
-      if (a === 'list') {
-        const tasks = cc.listTasks({ status: args.status, project: args.project, date: args.date, due_before: args.due_before, carry_forward: !!args.date });
-        if (tasks.length === 0) return 'No tasks found.';
-        return tasks.map(t => `${t.priority > 0 ? '!' : ' '} [${t.status === 'completed' ? 'x' : ' '}] ${t.text}${t.project_name ? ` (${t.project_name})` : ''}${t.due_date ? ` due ${t.due_date}` : ''}`).join('\n');
-      }
-      if (a === 'complete') return cc.completeTask(args.id, args.text);
-      if (a === 'update') { cc.updateTask(args.id, args); return `Task updated.`; }
-      if (a === 'delete') { cc.updateTask(args.id, { status: 'deleted' }); return 'Task deleted.'; }
-      return 'Unknown action. Use: add, list, complete, update, delete.';
-    }
-
-    case 'cc_project': {
-      const a = args.action;
-      if (a === 'add') { const p = cc.addProject(args); return `Project created: ${p.name} (${p.id})`; }
-      if (a === 'list') {
-        const projs = cc.listProjects(args.status);
-        if (projs.length === 0) return 'No projects.';
-        return projs.map(p => `${p.name} — ${p.active_tasks} active tasks${p.deadline ? `, due ${p.deadline}` : ''}`).join('\n');
-      }
-      if (a === 'update') { cc.updateProject(args.id, args); return 'Project updated.'; }
-      if (a === 'delete') { cc.deleteProject(args.id); return 'Project deleted.'; }
-      return 'Unknown action.';
-    }
-
     case 'cc_care': {
       const a = args.action;
       if (a === 'set') {
-        const entry = cc.upsertCareEntry({ date: args.date, person: args.person, category: args.category, value: args.value, note: args.note });
+        const entry = cc.upsertCareEntry({ date: args.date, person: args.person, category: args.category, value: args.value, note: args.note, source: 'mcp' });
+        broadcastCcUpdate('care');
         return `Care logged: ${entry.person} ${entry.category} = ${entry.value || ''}${entry.note ? ' (note)' : ''}`;
       }
       if (a === 'get') {
@@ -280,19 +171,6 @@ function handleTool(name: string, args: any): string {
         return entries.map(e => `${e.date} ${e.category}: ${e.value || '-'}`).join('\n');
       }
       return 'Unknown action. Use: set, get, history.';
-    }
-
-    case 'cc_event': {
-      const a = args.action;
-      if (a === 'add') { const e = cc.addEvent(args); return `Event added: ${e.title} on ${e.start_date} (${e.id})`; }
-      if (a === 'list') {
-        const events = cc.listEvents(args);
-        if (events.length === 0) return 'No events found.';
-        return events.map(e => `${e.start_date} ${e.start_time || 'all day'} — ${e.title} (${e.category})`).join('\n');
-      }
-      if (a === 'update') { cc.updateEvent(args.id, args); return 'Event updated.'; }
-      if (a === 'delete') { cc.deleteEvent(args.id); return 'Event deleted.'; }
-      return 'Unknown action.';
     }
 
     case 'cc_cycle': {
@@ -311,9 +189,13 @@ function handleTool(name: string, args: any): string {
         if (p.error) return p.error;
         return `Next period: ${p.nextPeriod}\nOvulation: ${p.ovulation}\nFertile: ${p.fertileWindow.start} — ${p.fertileWindow.end}\nPMS: ${p.pmsWindow.start} — ${p.pmsWindow.end}`;
       }
-      if (a === 'start_period') return cc.startPeriod(args.date, args.notes);
-      if (a === 'end_period') return cc.endPeriod(args.date);
-      if (a === 'log') return cc.logCycleDaily(args);
+      if (a === 'start_period') { const r = cc.startPeriod(args.date, args.notes); broadcastCcUpdate('cycle'); return r; }
+      if (a === 'end_period') {
+        const r = cc.endPeriod(args.date);
+        if (r.ok) broadcastCcUpdate('cycle');
+        return r.message;
+      }
+      if (a === 'log') { const r = cc.logCycleDaily(args); broadcastCcUpdate('cycle'); return r; }
       return 'Unknown action.';
     }
 
@@ -335,67 +217,20 @@ function handleTool(name: string, args: any): string {
       return 'Unknown action.';
     }
 
-    case 'cc_list': {
-      const a = args.action;
-      if (a === 'create') { const l = cc.createList({ name: args.name, icon: args.icon, color: args.color }); return `List created: ${(l as any).name}`; }
-      if (a === 'list_all') {
-        const lists = cc.getAllLists();
-        return lists.map((l: any) => `${l.name}: ${l.unchecked_count}/${l.item_count} items`).join('\n') || 'No lists.';
-      }
-      if (a === 'view') {
-        const list = cc.getListWithItems(args.list_id, args.list_name);
-        if (!list) return 'List not found.';
-        const items = (list.items || []).map((i: any) => `${i.checked ? '[x]' : '[ ]'} ${i.text}`).join('\n');
-        return `${list.name}\n${items || '(empty)'}`;
-      }
-      if (a === 'add') {
-        const id = args.list_id || (() => { const l = cc.getListWithItems(undefined, args.list_name); return l?.id; })();
-        if (!id) return 'List not found.';
-        const items = args.items || (args.item ? [args.item] : []);
-        const count = cc.addListItems(id, items, args.added_by);
-        return `Added ${count} item(s).`;
-      }
-      if (a === 'check') { cc.checkListItem(args.item_id, args.checked ?? true); return 'Item updated.'; }
-      if (a === 'delete_list') { cc.deleteLst(args.list_id); return 'List deleted.'; }
-      if (a === 'delete_item') { cc.deleteListItem(args.item_id); return 'Item deleted.'; }
-      if (a === 'clear') {
-        const id = args.list_id || (() => { const l = cc.getListWithItems(undefined, args.list_name); return l?.id; })();
-        if (!id) return 'List not found.';
-        const count = cc.clearListItems(id, args.all);
-        return `Cleared ${count} item(s).`;
-      }
-      return 'Unknown action.';
-    }
-
-    case 'cc_expense': {
-      const a = args.action;
-      if (a === 'add') { cc.addExpense(args); return `Expense logged: ${currency}${args.amount} (${args.category || 'other'})`; }
-      if (a === 'list') {
-        const { expenses, total } = cc.listExpenses(args);
-        if (expenses.length === 0) return 'No expenses.';
-        return expenses.map((e: any) => `${e.date} ${currency}${e.amount.toFixed(2)} ${e.category} — ${e.description || ''}`).join('\n') + `\nTotal: ${currency}${total.toFixed(2)}`;
-      }
-      if (a === 'stats') {
-        const s = cc.getExpenseStats(args.period);
-        return `${s.period}: ${currency}${s.total.toFixed(2)} total, ${currency}${s.dailyAverage.toFixed(2)}/day, ${s.count} entries\n` +
-          (s.byCategory || []).map((c: any) => `  ${c.category}: ${currency}${c.total.toFixed(2)}`).join('\n');
-      }
-      return 'Unknown action.';
-    }
-
     case 'cc_countdown': {
       const a = args.action;
-      if (a === 'add') { cc.addCountdown(args); return `Countdown added: ${args.title} (${args.target_date})`; }
+      if (a === 'add') { cc.addCountdown(args); broadcastCcUpdate('countdowns'); return `Countdown added: ${args.title} (${args.target_date})`; }
       if (a === 'list') {
         const cds = cc.listCountdowns();
         return cds.map((c: any) => `${c.emoji || ''} ${c.title} — ${c.days_until === 0 ? 'TODAY' : c.days_until > 0 ? c.days_until + ' days' : Math.abs(c.days_until) + ' days ago'}`).join('\n') || 'No countdowns.';
       }
-      if (a === 'delete') { cc.deleteCountdown(args.id); return 'Countdown deleted.'; }
+      if (a === 'delete') { cc.deleteCountdown(args.id); broadcastCcUpdate('countdowns'); return 'Countdown deleted.'; }
       return 'Unknown action.';
     }
 
     case 'cc_daily_win':
       cc.upsertDailyWin({ text: args.text, who: args.who, date: args.date });
+      broadcastCcUpdate('wins');
       return `Win logged for ${args.who || defaultPerson}: ${args.text}`;
 
     case 'cc_scratchpad': {
@@ -427,47 +262,58 @@ function handleTool(name: string, args: any): string {
         const note = cc.addScratchpadNote(args.text, companionName);
         return `Note added: "${note.text}" (${note.id})`;
       }
-      if (a === 'add_task') {
-        if (!args.text) return 'Error: text is required for add_task.';
-        const task = cc.addTask({ text: args.text, created_by: companionName });
-        return `Task added to scratchpad: "${task.text}" (${task.id})`;
+      // Tasks + events were REMOVED from the scratchpad 2026-07-03:
+      // the world's paperwork lives in Google (google-workspace Tasks/Calendar),
+      // the house keeps care. Stale callers get an honest redirect, not a write.
+      if (a === 'add_task' || a === 'remove_task') {
+        return 'Tasks no longer live on the scratchpad — use google-workspace Tasks (service: tasks). The scratchpad is house notes only.';
       }
       if (a === 'add_event') {
-        if (!args.text) return 'Error: text is required for add_event.';
-        const todayDate = new Date().toLocaleDateString('en-CA', { timeZone: config.identity.timezone });
-        const event = cc.addEvent({ title: args.text, start_date: args.start_date || todayDate, start_time: args.start_time, created_by: companionName });
-        return `Event added: "${event.title}" on ${event.start_date}${event.start_time ? ' at ' + event.start_time : ''} (${event.id})`;
+        return 'Events no longer live on the scratchpad — use google-workspace Calendar (service: calendar). The scratchpad is house notes only.';
       }
       if (a === 'remove_note') {
         if (!args.id) return 'Error: id is required for remove_note.';
         const ok = cc.deleteScratchpadNote(args.id);
         return ok ? 'Note removed.' : 'Note not found.';
       }
-      if (a === 'remove_task') {
-        if (!args.id) return 'Error: id is required for remove_task.';
-        cc.updateTask(args.id, { status: 'deleted' });
-        return 'Task removed.';
-      }
       if (a === 'clear_notes') {
         const count = cc.clearScratchpadNotes();
         return `Cleared ${count} note(s).`;
       }
-      return 'Unknown action. Use: status, add_note, add_task, remove_note, remove_task, clear_notes.';
+      return 'Unknown action. Use: status, add_note, remove_note, clear_notes. (Tasks → google-workspace Tasks; events → google-workspace Calendar.)';
     }
 
-    case 'cc_presence': {
-      if (args.action === 'get') {
-        return JSON.stringify({
-          emoji: getConfig('user_status_emoji') || '',
-          label: getConfig('user_status_label') || '',
-        });
+    case 'cc_routine': {
+      const a = args.action;
+      if (a === 'list') {
+        const routines = cc.listRoutines(!args.include_inactive);
+        if (routines.length === 0) return 'No routines.';
+        return routines.map(r => `${r.label} [${r.category}] — by ${r.window_end}${r.window_start ? ` (from ${r.window_start})` : ''}, ${r.days}${r.active ? '' : ' (inactive)'} (${r.id})`).join('\n');
       }
-      if (args.action === 'set') {
-        if (args.emoji) setConfig('user_status_emoji', args.emoji);
-        if (args.label) setConfig('user_status_label', args.label);
-        return `Status set: ${args.emoji || ''} ${args.label || ''}`;
+      if (a === 'create') {
+        if (!args.label || !args.category || !args.window_end) return 'Error: label, category and window_end are required for create.';
+        const r = cc.createRoutine({ label: args.label, category: args.category, window_start: args.window_start, window_end: args.window_end, days: args.days });
+        broadcastCcUpdate('routines');
+        return `Routine created: ${r.label} [${r.category}] by ${r.window_end}, ${r.days} (${r.id})`;
       }
-      return 'Unknown action. Use: get, set.';
+      if (a === 'update') {
+        if (!args.id) return 'Error: id is required for update.';
+        const ok = cc.updateRoutine(args.id, { label: args.label, category: args.category, window_start: args.window_start, window_end: args.window_end, days: args.days, active: args.active });
+        if (ok) broadcastCcUpdate('routines');
+        return ok ? 'Routine updated.' : 'Routine not found (or nothing to update).';
+      }
+      if (a === 'deactivate') {
+        if (!args.id) return 'Error: id is required for deactivate.';
+        const ok = cc.deactivateRoutine(args.id);
+        if (ok) broadcastCcUpdate('routines');
+        return ok ? 'Routine deactivated.' : 'Routine not found.';
+      }
+      if (a === 'status') {
+        const statuses = cc.getRoutineStatusToday();
+        if (statuses.length === 0) return 'No routines due today.';
+        return statuses.map(s => `${s.routine.label} [${s.routine.category}] — ${s.status === 'missed' ? 'MISSED' : s.status}${s.completedAt ? ` at ${s.completedAt}` : ''} (window ends ${s.routine.window_end})`).join('\n');
+      }
+      return 'Unknown action. Use: list, create, update, deactivate, status.';
     }
 
     default:

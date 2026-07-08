@@ -27,15 +27,9 @@
   --companion-bg: #18141e;
   --companion-border: #2a2235;
   --companion-accent: var(--gold);
-  --simon-bg: var(--companion-bg);
-  --simon-border: var(--companion-border);
-  --simon-accent: var(--companion-accent);
   --user-bg: #151820;
   --user-border: #222a38;
   --user-accent: #8a9ab0;
-  --mary-bg: var(--user-bg);
-  --mary-border: var(--user-border);
-  --mary-accent: var(--user-accent);
 
   /* Presence — gold warmth, not traffic lights */
   --status-active: var(--gold);

@@ -123,11 +123,14 @@ describe('evaluateConditions', () => {
     });
   });
 
-  describe('routine_missing', () => {
-    it('detects missing routine in status text', () => {
+  // routine_missing was retired 2026-07-02 — the case is a DEAD PATH kept only
+  // so legacy rows don't throw, and it ALWAYS evaluates false now (use
+  // routine_due instead). These tests assert the retired contract.
+  describe('routine_missing (retired — always false)', () => {
+    it('no longer fires even when the routine reads missing', () => {
       const conditions: TriggerCondition[] = [{ type: 'routine_missing', routine: 'shower', after_hour: 10 }];
       const ctx = makeContext({ statusText: 'shower: no', hour: 14 });
-      expect(evaluateConditions(conditions, ctx)).toBe(true);
+      expect(evaluateConditions(conditions, ctx)).toBe(false);
     });
 
     it('returns false when routine is done', () => {
@@ -148,10 +151,80 @@ describe('evaluateConditions', () => {
       expect(evaluateConditions(conditions, ctx)).toBe(false);
     });
 
-    it('is case-insensitive', () => {
+    it('stays false regardless of casing (retired path)', () => {
       const conditions: TriggerCondition[] = [{ type: 'routine_missing', routine: 'Shower', after_hour: 10 }];
       const ctx = makeContext({ statusText: 'shower: No', hour: 14 });
-      expect(evaluateConditions(conditions, ctx)).toBe(true);
+      expect(evaluateConditions(conditions, ctx)).toBe(false);
+    });
+  });
+
+  describe('compound conditions', () => {
+    it('compound_or fires when any branch is true', () => {
+      const conditions: TriggerCondition[] = [{
+        type: 'compound_or',
+        conditions: [
+          { type: 'presence_state', state: 'offline' },
+          { type: 'agent_free' },
+        ],
+      }];
+      expect(evaluateConditions(conditions, makeContext({ presenceNow: 'active', agentFree: true }))).toBe(true);
+    });
+
+    it('compound_or fails when no branch is true', () => {
+      const conditions: TriggerCondition[] = [{
+        type: 'compound_or',
+        conditions: [
+          { type: 'presence_state', state: 'offline' },
+          { type: 'agent_free' },
+        ],
+      }];
+      expect(evaluateConditions(conditions, makeContext({ presenceNow: 'active', agentFree: false }))).toBe(false);
+    });
+
+    it('empty compound_or is false (no satisfiable branch)', () => {
+      const conditions: TriggerCondition[] = [{ type: 'compound_or', conditions: [] }];
+      expect(evaluateConditions(conditions, makeContext())).toBe(false);
+    });
+
+    it('top-level array stays AND across a compound_or', () => {
+      const conditions: TriggerCondition[] = [
+        { type: 'agent_free' },
+        { type: 'compound_or', conditions: [
+          { type: 'presence_state', state: 'active' },
+          { type: 'presence_state', state: 'idle' },
+        ] },
+      ];
+      expect(evaluateConditions(conditions, makeContext({ presenceNow: 'active', agentFree: true }))).toBe(true);
+      expect(evaluateConditions(conditions, makeContext({ presenceNow: 'active', agentFree: false }))).toBe(false);
+    });
+
+    it('allows one level of nesting (compound_and inside compound_or)', () => {
+      const conditions: TriggerCondition[] = [{
+        type: 'compound_or',
+        conditions: [
+          { type: 'presence_state', state: 'offline' },
+          { type: 'compound_and', conditions: [
+            { type: 'presence_state', state: 'active' },
+            { type: 'agent_free' },
+          ] },
+        ],
+      }];
+      expect(evaluateConditions(conditions, makeContext({ presenceNow: 'active', agentFree: true }))).toBe(true);
+      expect(evaluateConditions(conditions, makeContext({ presenceNow: 'active', agentFree: false }))).toBe(false);
+    });
+
+    it('rejects a compound nested beyond one level (evaluates false)', () => {
+      const conditions: TriggerCondition[] = [{
+        type: 'compound_or',
+        conditions: [{
+          type: 'compound_and',
+          conditions: [{
+            type: 'compound_or',
+            conditions: [{ type: 'agent_free' }], // depth 2 — one past the allowed nesting
+          }],
+        }],
+      }];
+      expect(evaluateConditions(conditions, makeContext({ agentFree: true }))).toBe(false);
     });
   });
 

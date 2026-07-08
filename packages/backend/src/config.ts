@@ -28,6 +28,7 @@ export interface ResonantConfig {
   agent: {
     cwd: string;
     claude_md_path: string;
+    system_prompt_file?: string;
     mcp_json_path: string;
     model: string;
     model_autonomous: string;
@@ -35,6 +36,7 @@ export interface ResonantConfig {
   orchestrator: {
     enabled: boolean;
     wake_prompts_path: string;
+    wake_prompts_dir: string;
     schedules: Record<string, string>;
     failsafe: {
       enabled: boolean;
@@ -43,9 +45,22 @@ export interface ResonantConfig {
       emergency_minutes: number;
     };
   };
+  handoff: {
+    // Daily handoff subagent (12:10am): authors a warm carry-forward from
+    // yesterday's daily into today's. OFF BY DEFAULT. A KV row `handoff.enabled`
+    // overrides this at runtime (the Settings toggle persists there).
+    enabled: boolean;
+  };
   hooks: {
     context_injection: boolean;
     safe_write_prefixes: string[];
+    // Write-gate roots. workspace_root + vault_path are added as directory
+    // prefixes; extra_write_paths entries are directories (prefix match) unless
+    // they end in a file extension (exact match). Harvested from the reference app's
+    // WORKSPACE_ROOT / VAULT_PATH / EXTRA_WRITE_PATHS env trio, now config-backed.
+    workspace_root: string;
+    vault_path: string;
+    extra_write_paths: string[];
   };
   voice: {
     enabled: boolean;
@@ -65,6 +80,17 @@ export interface ResonantConfig {
       enabled: boolean;
       mcp_url: string;
     };
+  };
+  google: {
+    // Master gate for the Workspace MCP mount. Per-app toggles live in the DB
+    // (google_integrations); this flag only controls whether /mcp/workspace is
+    // mounted at all.
+    enabled: boolean;
+    // Desktop OAuth client creds — the user supplies from their Google Cloud project.
+    // Env (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET) overrides these. Empty =
+    // "not configured".
+    client_id: string;
+    client_secret: string;
   };
   command_center: {
     enabled: boolean;
@@ -90,7 +116,7 @@ const DEFAULTS: ResonantConfig = {
     companion_md_path: './identity/companion.md',
   },
   server: {
-    port: 3002,
+    port: 3099,
     host: '127.0.0.1',
     db_path: './data/resonant.db',
   },
@@ -100,6 +126,7 @@ const DEFAULTS: ResonantConfig = {
   agent: {
     cwd: '.',
     claude_md_path: './CLAUDE.md',
+    system_prompt_file: '',
     mcp_json_path: './.mcp.json',
     model: 'claude-sonnet-4-6',
     model_autonomous: 'claude-sonnet-4-6',
@@ -107,6 +134,7 @@ const DEFAULTS: ResonantConfig = {
   orchestrator: {
     enabled: true,
     wake_prompts_path: './prompts/wake.md',
+    wake_prompts_dir: './prompts/wakes',
     schedules: {},
     failsafe: {
       enabled: false,
@@ -115,9 +143,15 @@ const DEFAULTS: ResonantConfig = {
       emergency_minutes: 1440,
     },
   },
+  handoff: {
+    enabled: false,
+  },
   hooks: {
     context_injection: true,
     safe_write_prefixes: [],
+    workspace_root: '',
+    vault_path: '',
+    extra_write_paths: [],
   },
   voice: {
     enabled: false,
@@ -137,6 +171,11 @@ const DEFAULTS: ResonantConfig = {
       enabled: false,
       mcp_url: '',
     },
+  },
+  google: {
+    enabled: false,
+    client_id: '',
+    client_secret: '',
   },
   command_center: {
     enabled: false,
@@ -205,6 +244,16 @@ export function loadConfig(configPath?: string): ResonantConfig {
   if (process.env.TZ) merged.identity.timezone = process.env.TZ;
   if (process.env.DISCORD_ENABLED === 'true') merged.discord.enabled = true;
   if (process.env.TELEGRAM_ENABLED === 'true') merged.telegram.enabled = true;
+  if (process.env.GOOGLE_ENABLED === 'true') merged.google.enabled = true;
+  if (process.env.GOOGLE_CLIENT_ID) merged.google.client_id = process.env.GOOGLE_CLIENT_ID;
+  if (process.env.GOOGLE_CLIENT_SECRET) merged.google.client_secret = process.env.GOOGLE_CLIENT_SECRET;
+  // Write-gate roots (env wins over yaml). EXTRA_WRITE_PATHS is comma-separated.
+  if (process.env.WORKSPACE_ROOT) merged.hooks.workspace_root = process.env.WORKSPACE_ROOT;
+  if (process.env.VAULT_PATH) merged.hooks.vault_path = process.env.VAULT_PATH;
+  if (process.env.EXTRA_WRITE_PATHS) {
+    merged.hooks.extra_write_paths = process.env.EXTRA_WRITE_PATHS
+      .split(',').map(s => s.trim()).filter(Boolean);
+  }
 
   // Resolve relative paths against the project root (not cwd)
   const resolveFromRoot = (p: string) => resolve(PROJECT_ROOT, p);
@@ -213,8 +262,12 @@ export function loadConfig(configPath?: string): ResonantConfig {
   merged.identity.companion_md_path = resolveFromRoot(merged.identity.companion_md_path);
   merged.agent.cwd = resolveFromRoot(merged.agent.cwd);
   merged.agent.claude_md_path = resolveFromRoot(merged.agent.claude_md_path);
+  if (merged.agent.system_prompt_file) {
+    merged.agent.system_prompt_file = resolveFromRoot(merged.agent.system_prompt_file);
+  }
   merged.agent.mcp_json_path = resolveFromRoot(merged.agent.mcp_json_path);
   merged.orchestrator.wake_prompts_path = resolveFromRoot(merged.orchestrator.wake_prompts_path);
+  merged.orchestrator.wake_prompts_dir = resolveFromRoot(merged.orchestrator.wake_prompts_dir);
 
   _config = merged;
   return merged;

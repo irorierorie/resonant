@@ -153,6 +153,11 @@ Write the digest block for this conversation. Remember: output ONLY the markdown
         maxTurns: 1,
         permissionMode: 'plan' as any, // Read-only, no tool use
         tools: [], // No tools — just generate text
+        // tools:[] does NOT stop the SDK auto-loading the cwd's .mcp.json (~112 tools,
+        // incl. a malformed cloud-discord schema the API 400s on). Must load zero MCP.
+        // (Same fix as services/outlook-author.ts.)
+        strictMcpConfig: true,
+        mcpServers: {},
         persistSession: false,
       },
     })) {

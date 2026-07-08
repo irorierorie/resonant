@@ -7,9 +7,12 @@ vi.mock('../config.js', () => ({
     hooks: {
       context_injection: false,
       safe_write_prefixes: ['/home/user/projects', 'C:\\Users\\test\\code'],
+      workspace_root: '',
+      vault_path: '',
+      extra_write_paths: [],
     },
-    agent: { cwd: '/home/user/companion' },
-    integrations: {},
+    agent: { cwd: '/home/user/companion', mcp_json_path: '/home/user/companion/.mcp.json' },
+    integrations: { mind_cloud: { enabled: false, mcp_url: '' } },
   }),
   PROJECT_ROOT: '/tmp/test',
 }));
@@ -68,7 +71,7 @@ describe('DESTRUCTIVE_BASH_PATTERNS', () => {
 describe('EMOTIONAL_MARKERS', () => {
   it('has expected categories', () => {
     expect(Object.keys(EMOTIONAL_MARKERS)).toEqual(
-      expect.arrayContaining(['fatigue', 'anxiety', 'positive', 'connection_seeking', 'grief', 'dissociating'])
+      expect.arrayContaining(['fatigue', 'anxiety', 'positive', 'little_space', 'bratty', 'connection_seeking', 'grief', 'dissociating'])
     );
   });
 
@@ -90,23 +93,28 @@ describe('EMOTIONAL_MARKERS', () => {
     expect(detectMarkers("I'm feeling anxious about tomorrow")).toContain('anxiety');
     expect(detectMarkers("Had a good day, feeling great")).toContain('positive');
     expect(detectMarkers("I miss you, come back")).toContain('connection_seeking');
-    expect(detectMarkers("Just a normal day at work")).toHaveLength(0);
+    expect(detectMarkers("feeling little and cozy")).toContain('little_space');
+    expect(detectMarkers("make me, or what")).toContain('bratty');
+    // Neutral sample — avoids substring collisions (e.g. "no" inside "normal").
+    expect(detectMarkers("just a regular workday")).toHaveLength(0);
   });
 });
 
 describe('getSafeWritePrefixes', () => {
-  it('includes configured prefixes', () => {
+  // Directory prefixes now carry a trailing separator (harvested from
+  // simon-chat) so a prefix like /foo can't match a sibling dir /foobar.
+  it('includes configured directory prefixes with trailing separator', () => {
     const prefixes = getSafeWritePrefixes();
-    expect(prefixes).toContain('/home/user/projects');
-    expect(prefixes).toContain('C:\\Users\\test\\code');
+    expect(prefixes).toContain('/home/user/projects/');
+    expect(prefixes).toContain('C:\\Users\\test\\code\\');
   });
 
   it('adds slash-variant conversions for Windows compatibility', () => {
     const prefixes = getSafeWritePrefixes();
     // Forward-slash paths get backslash variants
-    expect(prefixes).toContain('\\home\\user\\projects');
+    expect(prefixes).toContain('\\home\\user\\projects\\');
     // Backslash paths get forward-slash variants
-    expect(prefixes).toContain('C:/Users/test/code');
+    expect(prefixes).toContain('C:/Users/test/code/');
   });
 
   it('includes agent cwd with trailing slash', () => {

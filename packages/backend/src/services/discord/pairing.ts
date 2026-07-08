@@ -75,6 +75,22 @@ export class PairingService {
     return { success: true, userId: pairing.userId };
   }
 
+  /** Deny (reject) a pending pairing request by its code. Deletes the row. */
+  deny(code: string): { success: boolean; userId?: string; error?: string } {
+    const db = getDb();
+    const pairing = db.prepare(`
+      SELECT * FROM discord_pairings
+      WHERE code = ? AND approved_at IS NULL
+    `).get(code.toUpperCase()) as (PairingCode & { approved_at: string | null }) | undefined;
+
+    if (!pairing) {
+      return { success: false, error: 'Invalid or already approved code' };
+    }
+
+    db.prepare('DELETE FROM discord_pairings WHERE code = ?').run(code.toUpperCase());
+    return { success: true, userId: pairing.userId };
+  }
+
   revoke(userId: string): boolean {
     const db = getDb();
     const result = db.prepare('DELETE FROM discord_pairings WHERE user_id = ?').run(userId);

@@ -1,6 +1,6 @@
 // WebSocket message protocol — the contract between frontend and backend
 
-import type { Message, Thread, Canvas, PresenceStatus, ThreadSummary, SystemStatus } from './types.js';
+import type { Message, Thread, Canvas, PresenceStatus, ThreadSummary, SystemStatus, Section } from './types.js';
 
 // --- Command system ---
 
@@ -51,7 +51,7 @@ export type ClientMessage =
 export type ServerMessage =
   | { type: 'message'; message: Message }
   | { type: 'message_edited'; messageId: string; newContent: string; editedAt: string }
-  | { type: 'message_deleted'; messageId: string }
+  | { type: 'message_deleted'; messageId: string; hard?: boolean }
   | { type: 'stream_start'; messageId: string; threadId: string }
   | { type: 'stream_token'; messageId: string; token: string }
   | { type: 'stream_end'; messageId: string; final: Message }
@@ -59,6 +59,7 @@ export type ServerMessage =
   | { type: 'unread_update'; threadId: string; count: number }
   | { type: 'thread_created'; thread: Thread }
   | { type: 'thread_list'; threads: ThreadSummary[] }
+  | { type: 'section_list'; sections: Section[] }
   | { type: 'tool_use'; toolId: string; toolName: string; input?: string; isComplete: boolean; textOffset?: number }
   | { type: 'tool_result'; toolId: string; output?: string; isError?: boolean }
   | { type: 'voice_audio'; data: string }
@@ -81,7 +82,7 @@ export type ServerMessage =
   | { type: 'canvas_updated'; canvasId: string; content: string; updatedAt: string; title?: string }
   | { type: 'canvas_deleted'; canvasId: string }
   | { type: 'canvas_list'; canvases: Canvas[] }
-  | { type: 'thinking'; content: string; summary: string }
+  | { type: 'thinking'; id: string; content: string; summary: string; textOffset: number; isComplete: boolean }
   | { type: 'message_reaction_added'; messageId: string; emoji: string; user: string; createdAt: string }
   | { type: 'message_reaction_removed'; messageId: string; emoji: string; user: string }
   | { type: 'generation_stopped' }

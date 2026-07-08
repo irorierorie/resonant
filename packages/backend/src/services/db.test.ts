@@ -9,6 +9,7 @@ vi.mock('./embeddings.js', () => ({
 // Mock vector cache
 vi.mock('./vector-cache.js', () => ({
   cacheEmbedding: vi.fn(),
+  removeEmbedding: vi.fn(),
 }));
 
 // Mock config

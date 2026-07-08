@@ -4,21 +4,45 @@ build/
 .svelte-kit/
 *.js.map
 *.tsbuildinfo
+
+# ── Local secrets & runtime state (never commit) ──────────────────────────────
 .env
+.dev.vars
+*.dev.vars
 data/
+data/.google-key
+data/.internal-token
+.google-key
+.internal-token
+.tv-token
 logs/
 *.db
 *.db-wal
 *.db-shm
+*.db*
 ecosystem.config.cjs
-resonant.yaml
-resonant.yml
-CLAUDE.md
-.mcp.json
+scripts/launch.ps1
 .resonant-thread
-prompts/
+
+# ── Local config & identity (anchored to root so example copies survive) ──────
+/resonant.yaml
+/resonant.yml
+/config/resonant.yaml
+/CLAUDE.md
+/.mcp.json
+
+# ── Real wake prompts stay local; keep the generic example ────────────────────
+prompts/*
+!prompts/wake.md
+
 package-lock.json
 .DS_Store
 Thumbs.db
 screenshots/
 !docs/screenshots/
+tmp/
+
+# ── Template files that MUST stay committable ─────────────────────────────────
+!resonant.example.yaml
+!.env.example
+!examples/
